@@ -273,7 +273,18 @@ async function fetchAvailableTags() {
     for (const c of contacts) {
       (c.tags || []).forEach(t => tagSet.add(t));
     }
-    availableTags.value = Array.from(tagSet).sort();
+    // Whitelist: bỏ tag system mặc định (Tag N), prefix auto:, độ dài < 2, hoặc rỗng.
+    // Sale chỉ thấy tag có nghĩa.
+    const SYSTEM_TAG_RE = /^(Tag\s*\d+|tag\d+)$/i;
+    availableTags.value = Array.from(tagSet)
+      .filter(t => {
+        const trimmed = t.trim();
+        if (trimmed.length < 2) return false;
+        if (SYSTEM_TAG_RE.test(trimmed)) return false;
+        if (trimmed.startsWith('auto:')) return false;
+        return true;
+      })
+      .sort();
   } catch {
     /* non-critical */
   }

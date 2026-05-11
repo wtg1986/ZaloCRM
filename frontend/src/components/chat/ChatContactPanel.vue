@@ -85,7 +85,12 @@
             <span class="ip-label">SĐT</span>
             <div class="phone-cell">
               <input v-model="form.phone" placeholder="SĐT chính" @blur="saveContact" />
-              <button class="show-extra-phones" @click="showExtraPhones = !showExtraPhones">
+              <button
+                v-if="form.phone"
+                class="show-extra-phones"
+                :title="showExtraPhones ? 'Ẩn SĐT phụ' : 'Hiện SĐT phụ'"
+                @click="showExtraPhones = !showExtraPhones"
+              >
                 {{ showExtraPhones ? '−' : '+' }} {{ filledExtras }}/2
               </button>
             </div>
@@ -104,7 +109,7 @@
           <div class="ip-form-row">
             <span class="ip-icon">✉</span>
             <span class="ip-label">Email</span>
-            <input v-model="form.email" placeholder="email@example.com" @blur="saveContact" />
+            <input v-model="form.email" placeholder="Chưa có email" @blur="saveContact" />
           </div>
           <div class="ip-form-row">
             <span class="ip-icon">📍</span>
@@ -164,6 +169,16 @@
               @blur="confirmAddTag"
             />
             <button v-else class="tag-chip add" @click="startAddTag">+ Thêm</button>
+          </div>
+          <!-- Quick-add suggestions khi chưa có tag nào -->
+          <div v-if="!form.tags.length && !addingTag" class="tag-suggestions">
+            <span class="suggestion-label">Gắn nhanh:</span>
+            <button
+              v-for="s in TAG_SUGGESTIONS"
+              :key="s"
+              class="tag-chip suggestion"
+              @click="addSuggestedTag(s)"
+            >+ {{ s }}</button>
           </div>
         </section>
       </div>
@@ -418,6 +433,15 @@ function confirmAddTag() {
 function removeTag(tag: string) {
   form.tags = form.tags.filter(t => t !== tag);
   saveContact();
+}
+
+// Tag quick-add suggestions cho contact mới chưa có tag
+const TAG_SUGGESTIONS = ['vip', 'quan_tam', 'cần_báo_giá', 'hot_lead', 'lạnh', 'đầu_tư'] as const;
+function addSuggestedTag(tag: string) {
+  if (!form.tags.includes(tag)) {
+    form.tags.push(tag);
+    saveContact();
+  }
 }
 
 // ════════ Automation cards (placeholder — chờ backend) ════════
@@ -767,6 +791,33 @@ function relativeTime(dateStr: string) {
   font-size: 11px;
   width: 110px;
   font-family: inherit;
+}
+.tag-suggestions {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  align-items: center;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--smax-grey-200);
+}
+.suggestion-label {
+  font-size: 10.5px;
+  color: var(--smax-grey-700);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  font-weight: 600;
+}
+.tag-chip.suggestion {
+  background: transparent;
+  border: 1px dashed var(--smax-primary);
+  color: var(--smax-primary);
+  font-size: 10.5px;
+  padding: 2px 7px;
+  cursor: pointer;
+  border-radius: 7px;
+  font-family: inherit;
+}
+.tag-chip.suggestion:hover {
+  background: var(--smax-primary-soft);
 }
 
 .metrics-row {

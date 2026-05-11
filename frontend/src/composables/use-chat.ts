@@ -48,6 +48,15 @@ interface RawMessage extends Omit<Message, 'reactions' | 'reply'> {
   reactions?: Array<{ emoji: string; reactorId: string; count?: number; reacted?: boolean }>;
 }
 
+export interface FriendshipInfo {
+  /** friend | pending_friend | chatting_stranger | ghost | none */
+  relationshipKind: string;
+  /** none | pending_sent | pending_received | accepted | rejected | removed | blocked */
+  friendshipStatus: string;
+  becameFriendAt: string | null;
+  firstMessageAt: string | null;
+}
+
 export interface Conversation {
   id: string;
   threadType: 'user' | 'group';
@@ -57,8 +66,12 @@ export interface Conversation {
   groupName?: string | null;
   /** Avatar nhóm Zalo URL (chỉ có khi threadType=group) */
   groupAvatarUrl?: string | null;
+  /** Số thành viên nhóm */
+  groupMembersCount?: number | null;
   /** External thread ID (group id từ Zalo, hoặc UID per-nick cho user thread) */
   externalThreadId?: string | null;
+  /** Friend record per-pair (chỉ user thread) — backend join từ Friend table */
+  friendship?: FriendshipInfo | null;
   lastMessageAt: string | null;
   unreadCount: number;
   isReplied: boolean;

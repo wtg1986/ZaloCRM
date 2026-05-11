@@ -184,8 +184,30 @@ export async function chatRoutes(app: FastifyInstance) {
       prisma.conversation.count({ where }),
     ]);
 
+    // Batch fetch Friend records cho user threads để FE biết friendship state
+    const userPairs = conversations
+      .filter(c => c.threadType === 'user' && c.contactId)
+      .map(c => ({ zaloAccountId: c.zaloAccountId, contactId: c.contactId! }));
+    let friendMap = new Map<string, { relationshipKind: string; friendshipStatus: string; becameFriendAt: Date | null; firstMessageAt: Date | null }>();
+    if (userPairs.length) {
+      const friends = await prisma.friend.findMany({
+        where: { OR: userPairs.map(p => ({ AND: [{ zaloAccountId: p.zaloAccountId }, { contactId: p.contactId }] })) },
+        select: { zaloAccountId: true, contactId: true, relationshipKind: true, friendshipStatus: true, becameFriendAt: true, firstMessageAt: true },
+      });
+      friendMap = new Map(friends.map(f => [`${f.zaloAccountId}:${f.contactId}`, {
+        relationshipKind: f.relationshipKind,
+        friendshipStatus: f.friendshipStatus,
+        becameFriendAt: f.becameFriendAt,
+        firstMessageAt: f.firstMessageAt,
+      }]));
+    }
+
     return {
-      conversations: conversations.map((conversation) => ({ ...conversation, isPinned: conversation.pins.length > 0 })),
+      conversations: conversations.map((c) => ({
+        ...c,
+        isPinned: c.pins.length > 0,
+        friendship: c.contactId ? friendMap.get(`${c.zaloAccountId}:${c.contactId}`) || null : null,
+      })),
       total,
       page: parseInt(page),
       limit: Math.min(parseInt(limit), 200),
@@ -207,7 +229,16 @@ export async function chatRoutes(app: FastifyInstance) {
     });
     if (!conversation) return reply.status(404).send({ error: 'Not found' });
 
-    return { ...conversation, isPinned: conversation.pins.length > 0 };
+    let friendship: { relationshipKind: string; friendshipStatus: string; becameFriendAt: Date | null; firstMessageAt: Date | null } | null = null;
+    if (conversation.threadType === 'user' && conversation.contactId) {
+      const f = await prisma.friend.findUnique({
+        where: { zaloAccountId_contactId: { zaloAccountId: conversation.zaloAccountId, contactId: conversation.contactId } },
+        select: { relationshipKind: true, friendshipStatus: true, becameFriendAt: true, firstMessageAt: true },
+      });
+      friendship = f;
+    }
+
+    return { ...conversation, isPinned: conversation.pins.length > 0, friendship };
   });
 
   // ── List messages for a conversation (paginated, newest first) ──────────

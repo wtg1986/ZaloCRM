@@ -33,7 +33,9 @@
               <svg v-else-if="contactGender === 'male'" class="gender-svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <path d="M19 4h-6v2h2.59l-4.13 4.13C10.65 9.42 9.36 9 8 9c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6c0-1.36-.42-2.65-1.13-3.74L17 7.41V10h2V4h0zM8 19c-2.21 0-4-1.79-4-4s1.79-4 4-4 4 1.79 4 4-1.79 4-4 4z"/>
               </svg>
-              <span v-else class="gender-q">?</span>
+              <svg v-else class="gender-svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z"/>
+              </svg>
               <span class="gender-label">{{ genderLabel }}</span>
             </span>
             <CareStatusBadge
@@ -70,15 +72,60 @@
         </div>
 
         <div class="ch-actions">
-          <button v-if="friendshipChip" class="btn-action btn-friend-already">
-            ✓ Đã KB
+          <!-- Smart friendship button: state-aware -->
+          <button
+            v-if="friendshipState === 'friend'"
+            class="btn-action btn-friend-already"
+            :title="friendshipTitle"
+            disabled
+          >
+            <span class="ic">✓</span> Đã KB
+            <span v-if="friendDaysLabel" class="sub-meta">{{ friendDaysLabel }}</span>
           </button>
+          <button
+            v-else-if="friendshipState === 'pending_friend'"
+            class="btn-action btn-pending"
+            :title="`Đã gửi mời. ${pendingDaysLabel}. Click để hủy.`"
+            @click="onCancelInvite"
+          >
+            <span class="ic">📤</span> Đã mời <span class="sub-meta">{{ pendingDaysLabel }}</span>
+          </button>
+          <button
+            v-else-if="friendshipState === 'ghost'"
+            class="btn-action btn-add-friend"
+            title="KH đã ngắt — gửi mời lại?"
+            @click="onSendInvite"
+          >
+            <span class="ic">+</span> Mời lại
+          </button>
+          <button
+            v-else-if="conversation.threadType === 'user'"
+            class="btn-action btn-add-friend"
+            title="Gửi lời mời kết bạn"
+            @click="onSendInvite"
+          >
+            <span class="ic">+</span> Kết bạn
+          </button>
+
           <button class="btn-action btn-webhook" :disabled="webhookLoading" @click="fireWebhook">
             {{ webhookLoading ? '⏳ Đang bắn…' : '🚀 Webhook' }}
           </button>
-          <button class="icon-btn" title="Lịch sử" @click="toast.push('Mở lịch sử (chưa implement)')">🕐</button>
-          <button class="icon-btn" title="Tìm" @click="toast.push('Tìm trong hội thoại (chưa implement)')">🔍</button>
-          <button class="icon-btn" title="Note" @click="toast.push('Ghi chú nhanh (xem ở info panel)')">📝</button>
+
+          <!-- More dropdown: gộp Lịch sử / Tìm / Note -->
+          <v-menu>
+            <template #activator="{ props: act }">
+              <button class="icon-btn" v-bind="act" title="Thêm">⋮</button>
+            </template>
+            <v-list density="compact" min-width="180">
+              <v-list-item prepend-icon="mdi-history" title="Lịch sử hội thoại" @click="toast.push('Lịch sử: chưa implement')" />
+              <v-list-item prepend-icon="mdi-magnify" title="Tìm trong hội thoại" @click="toast.push('Tìm: chưa implement')" />
+              <v-list-item prepend-icon="mdi-note-edit-outline" title="Ghi chú nhanh" @click="onOpenNote" />
+              <v-divider />
+              <v-list-item prepend-icon="mdi-bell-off-outline" title="Tắt thông báo" @click="toast.push('Mute: chưa implement')" />
+              <v-list-item prepend-icon="mdi-flag-outline" title="Báo cáo" @click="toast.push('Report: chưa implement')" />
+            </v-list>
+          </v-menu>
+
           <button
             class="icon-btn"
             :class="{ on: showContactPanel }"
@@ -377,11 +424,66 @@ function resolveSenderAvatar(msg: Message): string | null {
   }
   return null;
 }
-const friendshipChip = computed(() => {
+// ── Smart friendship state ─────────────────────────────────────────────────
+// Source: conv.friendship (backend join Friend by zaloAccountId × contactId).
+// Fallback heuristic: nếu không có Friend record nhưng contact.zaloUid set → assume 'chatting_stranger'.
+type FriendshipState = 'friend' | 'pending_friend' | 'chatting_stranger' | 'ghost' | null;
+
+const friendshipState = computed<FriendshipState>(() => {
   if (props.conversation?.threadType !== 'user') return null;
-  if (!props.conversation?.contact?.zaloUid) return null;
-  return '✓ Bạn bè';
+  const fs = props.conversation?.friendship;
+  if (fs) {
+    const k = fs.relationshipKind;
+    if (k === 'friend' || k === 'pending_friend' || k === 'chatting_stranger' || k === 'ghost') {
+      return k;
+    }
+  }
+  // No friend record yet → if contact has zaloUid (đã từng xuất hiện) treat as stranger
+  if (props.conversation?.contact?.zaloUid) return 'chatting_stranger';
+  return null;
 });
+
+const friendDaysLabel = computed(() => {
+  const at = props.conversation?.friendship?.becameFriendAt;
+  if (!at) return null;
+  const d = Math.floor((Date.now() - new Date(at).getTime()) / 86400000);
+  if (d < 1) return 'hôm nay';
+  if (d < 30) return `${d} ngày`;
+  if (d < 365) return `${Math.floor(d / 30)} tháng`;
+  return `${Math.floor(d / 365)} năm`;
+});
+
+const pendingDaysLabel = computed(() => {
+  // becameFriendAt được set khi accept; với pending dùng firstMessageAt (first outbound) làm proxy
+  const at = props.conversation?.friendship?.firstMessageAt
+    || props.conversation?.contact?.lastOutboundAt
+    || null;
+  if (!at) return 'vừa gửi';
+  const d = Math.floor((Date.now() - new Date(at).getTime()) / 86400000);
+  if (d < 1) return 'hôm nay';
+  if (d < 30) return `${d} ngày`;
+  return `${Math.floor(d / 30)} tháng`;
+});
+
+const friendshipTitle = computed(() => {
+  if (friendshipState.value === 'friend') {
+    return friendDaysLabel.value ? `Đã kết bạn ${friendDaysLabel.value}` : 'Đã kết bạn';
+  }
+  return '';
+});
+
+// Action stubs — chờ backend wire /friends/requests
+function onSendInvite() {
+  toast.warning('Gửi mời KB: chờ backend POST /friends/requests');
+}
+function onCancelInvite() {
+  toast.warning('Hủy mời KB: chờ backend DELETE /friends/requests/:uid');
+}
+function onOpenNote() {
+  // Open right info panel + scroll to note footer
+  if (!props.showContactPanel) emit('toggle-contact-panel');
+  toast.push('Mở ghi chú nhanh ở panel bên phải');
+}
 const inputPlaceholder = computed(() => {
   const nick = props.conversation?.zaloAccount?.displayName || 'Zalo';
   return `Đang nhắn từ nick: ${nick}\nGõ "/" để chèn template, "@" mention, "#" tag…`;
@@ -665,17 +767,6 @@ watch(() => props.messages.length, async () => {
   width: 16px; height: 16px;
   flex-shrink: 0;
 }
-.ch-gender-chip .gender-q {
-  width: 16px; height: 16px;
-  border-radius: 50%;
-  background: currentColor;
-  color: white;
-  font-size: 11px; font-weight: 700;
-  display: inline-flex; align-items: center; justify-content: center;
-}
-.ch-gender-chip .gender-q::before {
-  content: '?'; color: white;
-}
 .gender-female {
   background: rgba(233, 30, 99, 0.10);
   color: var(--smax-female, #e91e63);
@@ -726,6 +817,11 @@ watch(() => props.messages.length, async () => {
 .last-online.is-online .online-dot {
   background: var(--smax-success);
   box-shadow: 0 0 0 2px rgba(0, 200, 83, 0.15);
+  animation: online-pulse 2s ease-in-out infinite;
+}
+@keyframes online-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(0, 200, 83, 0.15); }
+  50%      { box-shadow: 0 0 0 4px rgba(0, 200, 83, 0.30); }
 }
 
 /* Legacy keeps */
@@ -751,6 +847,30 @@ watch(() => props.messages.length, async () => {
   background: rgba(0,200,83,0.08);
   color: #00897b;
   border-color: rgba(0,200,83,0.25);
+  cursor: default;
+}
+.btn-friend-already:disabled { opacity: 1; }
+.btn-pending {
+  background: rgba(255,145,0,0.10);
+  color: #ef6c00;
+  border-color: rgba(255,145,0,0.35);
+}
+.btn-pending:hover { background: rgba(255,145,0,0.18); }
+.btn-add-friend {
+  background: var(--smax-primary-soft);
+  color: var(--smax-primary);
+  border-color: var(--smax-primary);
+}
+.btn-add-friend:hover { background: var(--smax-primary); color: white; }
+.btn-action .ic {
+  font-size: 13px;
+  line-height: 1;
+}
+.btn-action .sub-meta {
+  font-size: 10px;
+  opacity: 0.7;
+  font-weight: 400;
+  margin-left: 2px;
 }
 .btn-webhook {
   background: var(--smax-primary);

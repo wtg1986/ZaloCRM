@@ -28,9 +28,12 @@
         </div>
 
         <template v-else>
-          <div v-if="reply" class="reply-card mb-2">
-            <div class="text-caption font-weight-medium" style="opacity: 0.8;">Trả lời</div>
-            <div class="text-body-2 reply-text">{{ reply.content || '(tin nhắn)' }}</div>
+          <div v-if="reply" class="reply-card">
+            <div class="reply-header">
+              <v-icon size="11" class="reply-icon">mdi-reply</v-icon>
+              <span class="reply-sender">Trả lời{{ replySenderLabel ? ' ' + replySenderLabel : '' }}</span>
+            </div>
+            <div class="reply-text">{{ replyPreviewText }}</div>
           </div>
 
           <!-- Image -->
@@ -123,12 +126,13 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import type { Message } from '@/composables/use-chat';
+import { computed } from 'vue';
 import SpecialMessageRenderer from '@/components/chat/special-message-renderer.vue';
 import ReactionDisplay from '@/components/chat/reaction-display.vue';
 import ReactionPicker from '@/components/chat/reaction-picker.vue';
 import Avatar from '@/components/ui/Avatar.vue';
 
-defineProps<{
+const props = defineProps<{
   message: Message;
   isSelf: boolean;
   isGroup: boolean;
@@ -207,6 +211,33 @@ function isReminderMessage(msg: Message): boolean {
   if (!msg.content) return false;
   try { const p = JSON.parse(msg.content); return p.action === 'msginfo.actionlist'; } catch { return false; }
 }
+
+// ── Reply preview helpers ───────────────────────────────────────────────────
+const replySenderLabel = computed(() => {
+  const r = props.reply;
+  if (!r) return '';
+  // Hiện tại ReplyMessageRef không có senderName — chỉ có uidFrom.
+  // Sau khi backend bổ sung sẽ map trực tiếp. Tạm để trống.
+  return '';
+});
+
+const replyPreviewText = computed(() => {
+  const r = props.reply;
+  if (!r) return '';
+  const text = (r.content || '').trim();
+  if (text) return text.length > 80 ? text.slice(0, 80) + '…' : text;
+  // Fallback theo msgType (zalo msgType khi text rỗng — image/sticker/voice...)
+  const t = (r.msgType || '').toLowerCase();
+  if (t.includes('image') || t.includes('photo')) return '📷 Hình ảnh';
+  if (t.includes('voice') || t.includes('audio')) return '🎤 Tin nhắn thoại';
+  if (t.includes('video'))   return '🎥 Video';
+  if (t.includes('sticker')) return '🎴 Sticker';
+  if (t.includes('gif'))     return '🎞 GIF';
+  if (t.includes('file'))    return '📎 Tệp đính kèm';
+  if (t.includes('link') || t.includes('url')) return '🔗 Liên kết';
+  if (t.includes('location')) return '📍 Vị trí';
+  return '(tin nhắn)';
+});
 
 function getReminderTitle(msg: Message): string {
   try { return JSON.parse(msg.content!).title || ''; } catch { return msg.content || ''; }
@@ -304,9 +335,23 @@ function openFile(href: string) {
   border-radius: 7px;
   background: rgba(33, 150, 243, 0.08);
   border-left: 3px solid var(--smax-primary, #2962ff);
+  margin-bottom: 6px;
 }
+.reply-header {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 10.5px;
+  color: var(--smax-primary, #2962ff);
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.reply-icon { opacity: 0.85; }
+.reply-sender { letter-spacing: 0.2px; }
 .reply-text {
-  opacity: 0.85;
+  font-size: 12.5px;
+  color: var(--smax-text, #212121);
+  opacity: 0.78;
+  line-height: 1.35;
+  word-break: break-word;
 }
 .file-card {
   display: flex;
