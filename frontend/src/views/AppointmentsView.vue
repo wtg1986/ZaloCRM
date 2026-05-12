@@ -100,6 +100,11 @@
         {{ formatDate(item.appointmentDate) }}
       </template>
 
+      <!-- Time (timezone-aware từ appointmentDate, không trust appointmentTime string DB) -->
+      <template #item.time="{ item }">
+        {{ formatTime(item.appointmentDate) }}
+      </template>
+
       <!-- Contact name -->
       <template #item.contact="{ item }">
         <span>{{ item.contact?.fullName ?? '—' }}</span>
@@ -261,7 +266,7 @@ const createForm = ref<CreateForm>({
 const headers = [
   { title: 'Nguồn', key: 'source', sortable: false, width: '110px' },
   { title: 'Ngày', key: 'appointmentDate', sortable: true },
-  { title: 'Giờ', key: 'appointmentTime', sortable: true },
+  { title: 'Giờ', key: 'time', sortable: false }, // computed từ appointmentDate (timezone-aware)
   { title: 'Khách hàng', key: 'contact', sortable: false },
   { title: 'Loại', key: 'type', sortable: false },
   { title: 'Trạng thái', key: 'status', sortable: false },
@@ -288,6 +293,12 @@ const activeList = computed<Appointment[]>(() => {
 function formatDate(date: string) {
   if (!date) return '';
   return new Date(date).toLocaleDateString('vi-VN');
+}
+
+function formatTime(date: string) {
+  if (!date) return '';
+  const d = new Date(date);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 function typeLabel(type: string) {

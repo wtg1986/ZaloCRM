@@ -138,7 +138,7 @@
           <div class="flex-grow-1">
             <div class="apt-datetime">
               {{ formatAptDate(apt.appointmentDate) }}
-              <span v-if="apt.appointmentTime" class="apt-time">· {{ apt.appointmentTime }}</span>
+              <span class="apt-time">· {{ formatAptTime(apt.appointmentDate) }}</span>
             </div>
             <div v-if="apt.notes" class="apt-notes">{{ apt.notes }}</div>
           </div>
@@ -372,6 +372,15 @@ function isPresetActive(preset: Preset): boolean {
   );
 }
 
+// Compute "effective status" — bao gồm cả scheduled qua hạn nhưng cron chưa flip
+// (cron chạy mỗi 30 phút → có lag, UI cần real-time hơn).
+function effectiveStatus(apt: Appointment): string {
+  if (apt.status === 'scheduled' && new Date(apt.appointmentDate).getTime() < Date.now()) {
+    return 'overdue';
+  }
+  return apt.status;
+}
+
 // Thứ tự hiển thị (final):
 //   1. OVERDUE (cảnh báo, border đỏ) — TOP, sắp xếp quá hạn gần nhất lên trước
 //   2. SCHEDULED (chờ diễn ra, border vàng) — middle, gần đến giờ lên đầu
@@ -381,8 +390,9 @@ const sortedAppointments = computed(() => {
   const scheduled: Appointment[] = [];
   const done: Appointment[] = [];
   for (const a of props.appointments) {
-    if (a.status === 'overdue') overdue.push(a);
-    else if (a.status === 'scheduled') scheduled.push(a);
+    const es = effectiveStatus(a);
+    if (es === 'overdue') overdue.push(a);
+    else if (es === 'scheduled') scheduled.push(a);
     else done.push(a); // completed | cancelled | no_show
   }
   // Overdue: quá hạn gần nhất (sát now) lên trên — dễ action
@@ -399,8 +409,9 @@ const sortedAppointments = computed(() => {
 });
 
 function aptRowClass(apt: Appointment): string {
-  if (apt.status === 'overdue') return 'apt-overdue';
-  if (apt.status === 'completed' || apt.status === 'cancelled' || apt.status === 'no_show') return 'apt-done';
+  const es = effectiveStatus(apt);
+  if (es === 'overdue') return 'apt-overdue';
+  if (es === 'completed' || es === 'cancelled' || es === 'no_show') return 'apt-done';
   return ''; // scheduled = default warning border
 }
 
@@ -417,6 +428,13 @@ function statusColor(s: string): string {
 
 function statusLabel(s: string): string {
   return statusOptions.find(o => o.value === s)?.title || s;
+}
+
+// Hiển thị giờ từ appointmentDate (UTC ISO) → browser local timezone tự chuyển đúng.
+// Không dùng appointmentTime string vì rows cũ có thể lưu UTC sai (bug Zalo sync).
+function formatAptTime(d: string): string {
+  const dt = new Date(d);
+  return `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
 }
 
 // Hiển thị ngày kiểu thân thiện: Hôm qua / Hôm nay / Ngày mai / Ngày mốt → trong list này,
@@ -449,12 +467,9 @@ function formatAptDate(d: string): string {
 
 function startEdit(apt: Appointment) {
   editingId.value = apt.id;
+  // Dùng appointmentDate (UTC ISO → browser local Date) thay vì appointmentTime string
+  // — vì rows cũ có thể lưu sai timezone.
   const baseDate = apt.appointmentDate ? new Date(apt.appointmentDate) : new Date();
-  // Nếu có appointmentTime "HH:mm" thì override
-  if (apt.appointmentTime) {
-    const [hh, mm] = apt.appointmentTime.split(':').map(Number);
-    baseDate.setHours(hh || 0, mm || 0, 0, 0);
-  }
   editForm.datetime = toLocalInput(baseDate);
   editForm.notes = apt.notes ?? '';
   editForm.status = apt.status;

@@ -69,8 +69,17 @@ export async function syncReminderFromMessage(input: SyncInput): Promise<void> {
     if (!reminder) return;
 
     const apptDate = reminder.startTime ? new Date(reminder.startTime) : new Date();
+    // Time hiển thị phải tính theo timezone VN (server có thể chạy UTC trong Docker).
+    // Format thủ công thay vì toLocaleTimeString vì các phiên bản Node có locale data khác nhau.
     const apptTime = reminder.startTime
-      ? new Date(reminder.startTime).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', hour12: false })
+      ? (() => {
+          const d = new Date(reminder.startTime);
+          // Cộng 7 giờ để chuyển UTC sang Asia/Ho_Chi_Minh (UTC+7, không có DST)
+          const vn = new Date(d.getTime() + 7 * 60 * 60 * 1000);
+          const hh = String(vn.getUTCHours()).padStart(2, '0');
+          const mm = String(vn.getUTCMinutes()).padStart(2, '0');
+          return `${hh}:${mm}`;
+        })()
       : null;
 
     await prisma.appointment.upsert({
