@@ -44,8 +44,19 @@ function buildReplyQuote(message: {
   sentAt: Date;
 }) {
   if (!message.zaloMsgId || !message.senderUid) return null;
+  let quoteContent = message.content ?? '';
+  if (['image', 'video', 'file'].includes(message.contentType) && quoteContent.startsWith('{')) {
+    try {
+      const p = JSON.parse(quoteContent);
+      if (message.contentType === 'image') quoteContent = '[Hình ảnh]';
+      else if (message.contentType === 'video') quoteContent = '[Video]';
+      else quoteContent = `[Tệp] ${p.name || ''}`.trim();
+    } catch {
+      quoteContent = `[${message.contentType}]`;
+    }
+  }
   return {
-    content: message.content ?? '',
+    content: quoteContent,
     msgType: mapReplyMsgType(message.contentType),
     propertyExt: {},
     uidFrom: message.senderUid,

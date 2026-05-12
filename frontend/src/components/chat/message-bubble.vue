@@ -124,6 +124,15 @@
                 </div>
                 <div v-if="videoDuration" class="video-duration">{{ videoDuration }}</div>
               </div>
+              <div v-else-if="getVideoUrl(message)" class="chat-video-wrap">
+                <video
+                  :src="getVideoUrl(message)!"
+                  class="chat-video"
+                  controls
+                  preload="metadata"
+                  playsinline
+                />
+              </div>
               <div v-else class="video-card" @click="openVideo">
                 <v-icon size="20" color="info" class="mr-2">mdi-video-outline</v-icon>
                 <div>
@@ -273,6 +282,10 @@ function getFileInfo(msg: Message): { name: string; size: string; href: string }
   if (!msg.content?.startsWith('{')) return null;
   try {
     const p = JSON.parse(msg.content);
+    if (p.href && p.name && typeof p.size === 'number' && p.mime && !p.mime.startsWith('image/') && !p.mime.startsWith('video/')) {
+      const size = p.size > 1048576 ? `${(p.size / 1048576).toFixed(1)} MB` : `${Math.round(p.size / 1024)} KB`;
+      return { name: p.name, size, href: p.href };
+    }
     const params = typeof p.params === 'string' ? JSON.parse(p.params) : p.params;
     if (params?.fileExt || params?.fType === 1) {
       const bytes = parseInt(params.fileSize || '0');
@@ -281,6 +294,16 @@ function getFileInfo(msg: Message): { name: string; size: string; href: string }
     }
   } catch {}
   return null;
+}
+
+function getVideoUrl(msg: Message): string | null {
+  if (msg.contentType !== 'video' || !msg.content) return null;
+  if (msg.content.startsWith('http')) return msg.content;
+  if (!msg.content.startsWith('{')) return null;
+  try {
+    const p = JSON.parse(msg.content);
+    return p.href || p.fileUrl || p.normalUrl || null;
+  } catch { return null; }
 }
 
 function parseDisplayContent(content: string | null): string {

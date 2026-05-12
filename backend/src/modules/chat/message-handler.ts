@@ -81,27 +81,35 @@ export async function handleIncomingMessage(
 
     const sentAt = new Date(msg.timestamp);
 
-    // Dedup guard for self messages: if a self message with same content exists
-    // in the last 30 seconds, this is likely a selfListen echo of a CRM-sent message
+    // Dedup guard for self messages: if a self message exists in the last 30s, this is likely a selfListen echo of a CRM-sent message
     if (msg.isSelf && msg.msgId) {
+      // For text: match by content. For attachments (image/video/file): match by contentType only —
+      // CRM persists with our MinIO URL while Zalo echo carries Zalo CDN URL, so content strings differ.
+      const isAttachment = msg.contentType && ['image', 'video', 'file'].includes(msg.contentType);
+      const dupeWhere: any = {
+        conversationId: conversation.id,
+        senderType: 'self',
+        sentAt: { gte: new Date(Date.now() - 30_000) },
+      };
+      if (isAttachment) {
+        dupeWhere.contentType = msg.contentType;
+        dupeWhere.zaloMsgId = null;
+      } else {
+        dupeWhere.content = msg.content || '';
+      }
       const recentDupe = await prisma.message.findFirst({
-        where: {
-          conversationId: conversation.id,
-          senderType: 'self',
-          content: msg.content || '',
-          sentAt: { gte: new Date(Date.now() - 30_000) },
-        },
+        where: dupeWhere,
+        orderBy: { sentAt: 'desc' },
         select: { id: true, zaloMsgId: true },
       });
       if (recentDupe) {
-        // If the existing record has no zaloMsgId, backfill it for future dedup
         if (!recentDupe.zaloMsgId && msg.msgId) {
           await prisma.message.update({
             where: { id: recentDupe.id },
             data: { zaloMsgId: msg.msgId },
           }).catch(() => {});
         }
-        logger.debug(`[message-handler] Skipping self echo: content match within 30s`);
+        logger.debug(`[message-handler] Skipping self echo: ${isAttachment ? 'attachment' : 'content'} match within 30s`);
         return null;
       }
     }
