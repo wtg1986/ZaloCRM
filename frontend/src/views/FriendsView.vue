@@ -316,6 +316,7 @@ import CareStatusBadge from '@/components/ui/CareStatusBadge.vue';
 import type { CareStatusValue } from '@/constants/care-status';
 import Avatar from '@/components/ui/Avatar.vue';
 import { useToast } from '@/composables/use-toast';
+import { api } from '@/api';
 
 const router = useRouter();
 const { accounts, fetchAccounts } = useZaloAccounts();
@@ -403,9 +404,20 @@ async function onSync() {
   await fetch();
 }
 
-// Per-row actions
-function goChat(f: DbFriend) {
-  if (f.contact?.id) router.push({ path: '/chat', query: { contactId: f.contact.id } });
+// Per-row actions — đảm bảo conv tồn tại trước khi push vào Chat (Friend có thể
+// chưa có hội thoại nếu sale chưa từng nhắn). ensure-conversation idempotent.
+async function goChat(f: DbFriend) {
+  try {
+    const res = await api.post<{ conversationId: string }>(
+      `/friends/${f.id}/ensure-conversation`, {},
+    );
+    if (res.data?.conversationId) {
+      router.push({ name: 'Chat', params: { convId: res.data.conversationId } });
+    }
+  } catch (err) {
+    console.error('[FriendsView] ensure-conversation failed:', err);
+    if (f.contact?.id) router.push({ path: '/chat', query: { contactId: f.contact.id } });
+  }
 }
 const toast = useToast();
 function onSendInvite(f: DbFriend) {

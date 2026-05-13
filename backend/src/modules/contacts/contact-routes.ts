@@ -484,6 +484,51 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  // ── POST /api/v1/friends/:id/ensure-conversation — tạo (hoặc lấy) Conversation cho Friend ──
+  // Use case: sale muốn nhắn KH lần đầu (Friend từ sync, chưa có hội thoại). Trả convId
+  // để FE router.push thẳng vào Chat. Idempotent — gọi nhiều lần vẫn trả cùng convId.
+  app.post('/api/v1/friends/:id/ensure-conversation', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = request.user!;
+      const { id: friendId } = request.params as { id: string };
+
+      const friend = await prisma.friend.findFirst({
+        where: { id: friendId, orgId: user.orgId },
+        select: { id: true, contactId: true, zaloAccountId: true, zaloUidInNick: true },
+      });
+      if (!friend) return reply.status(404).send({ error: 'Friend not found' });
+
+      // Find-or-create conversation for (zaloAccount, externalThreadId=zaloUidInNick).
+      // threadType='user' vì Friend = 1-1 Zalo identity (group conv không qua đây).
+      const existing = await prisma.conversation.findFirst({
+        where: {
+          zaloAccountId: friend.zaloAccountId,
+          externalThreadId: friend.zaloUidInNick,
+        },
+        select: { id: true },
+      });
+      if (existing) return reply.send({ conversationId: existing.id, created: false });
+
+      const created = await prisma.conversation.create({
+        data: {
+          orgId: user.orgId,
+          zaloAccountId: friend.zaloAccountId,
+          contactId: friend.contactId,
+          threadType: 'user',
+          externalThreadId: friend.zaloUidInNick,
+          lastMessageAt: new Date(),
+          unreadCount: 0,
+          isReplied: false,
+        },
+        select: { id: true },
+      });
+      return reply.send({ conversationId: created.id, created: true });
+    } catch (err) {
+      logger.error('[friends] ensure-conversation error:', err);
+      return reply.status(500).send({ error: 'Ensure conversation failed', detail: String(err) });
+    }
+  });
+
   // ── POST /api/v1/friends/:id/promote-to-parent — gỡ Friend Con thành KH Cha mới ──
   // Tạo Contact mới từ Friend (1 Zalo identity per nick CRM), move Friend +
   // Conversation tương ứng sang Contact mới. Cha cũ giữ lại các Friend khác.

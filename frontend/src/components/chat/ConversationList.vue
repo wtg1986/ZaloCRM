@@ -2,12 +2,18 @@
   <div class="conv-list">
     <!-- ════════ Header: search + label chip + tabs ════════ -->
     <div class="cl-header">
-      <input
-        class="cl-search"
-        :value="search"
-        placeholder="Tìm theo tên, SĐT, nội dung tin nhắn…"
-        @input="onSearchInput"
-      />
+      <div class="cl-search-row">
+        <input
+          class="cl-search"
+          :value="search"
+          placeholder="Tìm theo tên, SĐT, nội dung tin nhắn…"
+          @input="onSearchInput"
+        />
+        <button class="cl-new-msg" title="Bắt đầu cuộc trò chuyện mới" @click="newMsgOpen = true">
+          <v-icon size="18">mdi-message-plus</v-icon>
+          <span>Tin nhắn mới</span>
+        </button>
+      </div>
 
       <!-- Label chip bar (filter theo tag CRM) -->
       <div v-if="availableTags.length" class="cl-label-bar">
@@ -127,21 +133,32 @@
         </v-list-item>
       </v-list>
     </v-menu>
+
+    <!-- Compose new message dialog -->
+    <NewMessageDialog
+      v-model="newMsgOpen"
+      :accounts="composeAccounts"
+      :default-account-id="composeDefaultAccountId"
+      @opened="onComposeOpened"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, onMounted } from 'vue';
+import { ref, reactive, watch, onMounted, computed } from 'vue';
 import type { Conversation, AiSentiment } from '@/composables/use-chat';
 import { api } from '@/api/index';
 import AiSentimentBadge from '@/components/ai/ai-sentiment-badge.vue';
 import Avatar from '@/components/ui/Avatar.vue';
+import NewMessageDialog from '@/components/chat/NewMessageDialog.vue';
 
 const props = defineProps<{
   conversations: Conversation[];
   selectedId: string | null;
   loading: boolean;
   search: string;
+  accounts?: { id: string; displayName: string | null }[];
+  selectedAccountIds?: string[];
 }>();
 
 const emit = defineEmits<{
@@ -151,7 +168,21 @@ const emit = defineEmits<{
   'update:filters': [params: Record<string, string>];
   'tab-changed': [tab: string];
   'conversation-moved': [id: string, tab: string];
+  'compose-opened': [conversationId: string];
 }>();
+
+// ── Compose new message ─────────────────────────────────────────────────────
+const newMsgOpen = ref(false);
+const composeAccounts = computed(() => props.accounts || []);
+const composeDefaultAccountId = computed<string | null>(() => {
+  const ids = props.selectedAccountIds || [];
+  if (ids.length === 1) return ids[0];
+  if (composeAccounts.value.length === 1) return composeAccounts.value[0].id;
+  return null;
+});
+function onComposeOpened(conversationId: string) {
+  emit('compose-opened', conversationId);
+}
 
 // ── Tab state ──────────────────────────────────────────────────────────────
 const activeTab = ref<'main' | 'other'>('main');
@@ -429,8 +460,11 @@ function formatTime(dateStr: string | null): string {
   border-bottom: 1px solid var(--smax-grey-200);
   background: var(--smax-grey-50);
 }
+.cl-search-row {
+  display: flex; gap: 6px; align-items: center;
+}
 .cl-search {
-  width: 100%;
+  flex: 1; min-width: 0;
   padding: 9px 11px 9px 36px;
   border: 1.5px solid var(--smax-grey-200);
   border-radius: 9px;
@@ -440,6 +474,23 @@ function formatTime(dateStr: string | null): string {
   font-family: inherit;
 }
 .cl-search:focus { border-color: var(--smax-primary); }
+.cl-new-msg {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 8px 10px;
+  border: 1.5px solid var(--smax-primary);
+  background: var(--smax-primary-soft);
+  color: var(--smax-primary);
+  border-radius: 9px;
+  font-size: 12px; font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.cl-new-msg:hover {
+  background: var(--smax-primary);
+  color: white;
+}
 
 .cl-label-bar {
   display: flex; gap: 4px; margin-top: 7px;

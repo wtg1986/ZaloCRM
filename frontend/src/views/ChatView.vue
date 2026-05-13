@@ -16,11 +16,14 @@
         :conversations="conversations"
         :selected-id="selectedConvId"
         :loading="loadingConvs"
+        :accounts="accountList"
+        :selected-account-ids="selectedAccountIds"
         v-model:search="searchQuery"
         @select="onSelectConv"
         @filter-account="onFilterAccount"
         @update:filters="onFiltersUpdate"
         @conversation-moved="onConversationMoved"
+        @compose-opened="onComposeOpened"
       />
     </div>
 
@@ -189,6 +192,12 @@ function onFiltersUpdate(params: Record<string, string>) {
 }
 function onConversationMoved(_id: string, _tab: string) {
   fetchConversations();
+}
+
+// Khi user tạo conv mới từ "Tin nhắn mới" dialog → refresh list + nav vào conv đó.
+async function onComposeOpened(conversationId: string) {
+  await fetchConversations();
+  router.push({ name: 'Chat', params: { convId: conversationId } });
 }
 
 // Auto-show panel khi chọn conv có contact

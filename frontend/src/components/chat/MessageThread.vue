@@ -960,6 +960,22 @@ watch(() => props.conversation?.id, async (newId) => {
   // Retry sau khi messages async load — scrollToBottom đã có retry 100/400/1000ms
   // nhưng nếu messages chưa thay đổi sau lần đầu thì watch messages.length sẽ trigger tiếp.
 });
+
+// Auto-focus editor khi vào Reply / Edit mode — con trỏ chuột nằm trong ô input
+// để user gõ luôn, không cần click thêm. Watch cả 2 prop: trigger bằng external
+// (click reply trong context menu, hoặc từ swipe action sau này).
+watch(() => props.replyingTo?.id, async (id) => {
+  if (id) {
+    await nextTick();
+    editorRef.value?.focus();
+  }
+});
+watch(() => props.editingMessage?.id, async (id) => {
+  if (id) {
+    await nextTick();
+    editorRef.value?.focus();
+  }
+});
 </script>
 
 <style scoped>
@@ -1149,8 +1165,12 @@ watch(() => props.conversation?.id, async (newId) => {
 }
 
 /* ════════ Messages ════════ */
+/* min-height: 0 cho phép flex item co lại khi input-area mở rộng (toolbar slide-in,
+   ReplyPreviewBar, AISuggestBar) — nếu thiếu, flexbox default min-height: auto
+   khiến container vượt parent → input đè lên đoạn chat. */
 .messages {
-  flex: 1; overflow-y: auto;
+  flex: 1; min-height: 0;
+  overflow-y: auto; overflow-anchor: auto;
   padding: 14px 26px;
   display: flex; flex-direction: column; gap: 5px;
 }
