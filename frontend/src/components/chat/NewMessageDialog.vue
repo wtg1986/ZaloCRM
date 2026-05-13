@@ -1,38 +1,66 @@
 <template>
-  <v-dialog :model-value="modelValue" @update:model-value="$emit('update:modelValue', $event)" max-width="640">
+  <v-dialog :model-value="modelValue" @update:model-value="$emit('update:modelValue', $event)" max-width="680">
     <v-card>
-      <v-card-title class="d-flex align-center">
-        <v-icon class="mr-2" color="primary">mdi-message-plus</v-icon>
-        Bắt đầu cuộc trò chuyện mới
+      <v-card-title class="dialog-title">
+        <div class="title-row">
+          <v-icon class="mr-2" color="primary">mdi-message-plus</v-icon>
+          <span>Tin nhắn mới</span>
+        </div>
+        <button
+          class="close-x"
+          title="Đóng"
+          @click="$emit('update:modelValue', false)"
+        >×</button>
       </v-card-title>
 
-      <v-card-text>
-        <!-- Pick nick CRM (account) -->
-        <v-select
-          v-model="selectedAccountId"
-          :items="accountItems"
-          item-title="title"
-          item-value="value"
-          label="Gửi từ nick CRM"
-          variant="outlined"
-          density="comfortable"
-          hide-details="auto"
-          class="mb-3"
-          @update:model-value="onAccountChange"
-        />
+      <!-- Section 1: Chọn nick CRM (chip selector) -->
+      <div class="section-nick">
+        <div class="section-label">
+          <v-icon size="14">mdi-account-arrow-right</v-icon>
+          <span>Gửi từ nick</span>
+          <span v-if="accounts.length === 0" class="hint-warn">— chưa có nick CRM nào</span>
+        </div>
+        <div v-if="accounts.length" class="nick-chip-row">
+          <button
+            v-for="a in accounts"
+            :key="a.id"
+            class="nick-chip"
+            :class="{ active: selectedAccountId === a.id }"
+            :title="a.displayName || 'Nick'"
+            @click="onPickNick(a.id)"
+          >
+            <Avatar
+              :name="a.displayName || 'Nick'"
+              :size="22"
+              :gradient-seed="a.id"
+              platform="zalo"
+            />
+            <span class="nick-name">{{ a.displayName || 'Nick' }}</span>
+            <v-icon v-if="selectedAccountId === a.id" size="14" color="primary">mdi-check-circle</v-icon>
+          </button>
+        </div>
+      </div>
 
+      <!-- Section 2: Search -->
+      <div class="section-search">
         <v-text-field
           v-model="query"
-          label="Tìm bạn: tên / SĐT / UID / globalId / username"
+          :placeholder="selectedAccountId
+            ? `Tìm KH: tên / SĐT / UID / @username / globalId`
+            : 'Chọn nick trước khi tìm…'"
           variant="outlined"
           density="comfortable"
           prepend-inner-icon="mdi-magnify"
           hide-details="auto"
           :disabled="!selectedAccountId"
+          autofocus
           @input="onSearchInput"
         />
+      </div>
 
-        <div class="mt-3 result-list">
+      <!-- Section 3: Kết quả -->
+      <div class="section-results">
+        <div class="result-list">
           <div v-if="searching" class="text-center text-grey pa-3">
             <v-progress-circular indeterminate size="20" />
           </div>
@@ -191,7 +219,7 @@
             />
           </v-radio-group>
         </div>
-      </v-card-text>
+      </div>
 
       <v-card-actions>
         <v-spacer />
@@ -263,9 +291,6 @@ const emit = defineEmits<{
 
 const toast = useToast();
 
-const accountItems = computed(() =>
-  props.accounts.map(a => ({ value: a.id, title: a.displayName || 'Nick' })),
-);
 const accountTitle = computed(() => {
   const found = props.accounts.find(a => a.id === selectedAccountId.value);
   return found?.displayName || 'nick';
@@ -308,10 +333,7 @@ const openButtonLabel = computed(() => {
   return 'Mở chat';
 });
 
-function resetState() {
-  selectedAccountId.value = props.defaultAccountId
-    ?? (props.accounts.length === 1 ? props.accounts[0].id : null);
-  query.value = '';
+function clearResults() {
   friendRows.value = [];
   contactRows.value = [];
   pickedKind.value = null;
@@ -319,6 +341,12 @@ function resetState() {
   lookupResult.value = null;
   lookupNotFound.value = null;
   lookupCommitMode.value = 'create';
+}
+function resetState() {
+  selectedAccountId.value = props.defaultAccountId
+    ?? (props.accounts.length === 1 ? props.accounts[0].id : null);
+  query.value = '';
+  clearResults();
 }
 
 watch(() => props.modelValue, (v) => { if (v) resetState(); });
@@ -341,10 +369,13 @@ function onSearchInput() {
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(() => runSearch(), 250);
 }
-function onAccountChange() {
-  resetState();
-  selectedAccountId.value = selectedAccountId.value; // keep
-  if (query.value) runSearch();
+// User click chip nick — KHÔNG đụng selectedAccountId (đã set ở @click handler).
+// Chỉ clear kết quả search cũ + retrigger search nếu có query.
+function onPickNick(id: string) {
+  if (selectedAccountId.value === id) return;
+  selectedAccountId.value = id;
+  clearResults();
+  if (query.value.trim()) runSearch();
 }
 
 async function runSearch() {
@@ -488,6 +519,64 @@ async function onOpenChat() {
 </script>
 
 <style scoped>
+.dialog-title {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--smax-grey-200);
+}
+.title-row { display: flex; align-items: center; font-size: 16px; font-weight: 600; }
+.close-x {
+  width: 28px; height: 28px;
+  border: none; background: transparent;
+  font-size: 22px; line-height: 1;
+  color: var(--smax-grey-700);
+  cursor: pointer; border-radius: 50%;
+}
+.close-x:hover { background: var(--smax-grey-100); }
+
+/* Section 1: nick selector — chip group cho compact + visual */
+.section-nick { padding: 12px 16px 8px; }
+.section-label {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11.5px; font-weight: 600;
+  color: var(--smax-grey-700);
+  text-transform: uppercase; letter-spacing: 0.3px;
+  margin-bottom: 6px;
+}
+.hint-warn { color: var(--smax-warning); text-transform: none; font-weight: 500; }
+.nick-chip-row {
+  display: flex; gap: 6px;
+  flex-wrap: wrap;
+}
+.nick-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px 4px 5px;
+  background: var(--smax-grey-100);
+  border: 1.5px solid transparent;
+  border-radius: 18px;
+  font-size: 12.5px; font-weight: 500;
+  color: var(--smax-text);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.12s;
+}
+.nick-chip:hover { background: var(--smax-grey-50); border-color: var(--smax-grey-300); }
+.nick-chip.active {
+  background: var(--smax-primary-soft);
+  border-color: var(--smax-primary);
+  color: var(--smax-primary);
+  font-weight: 600;
+}
+.nick-chip .nick-name {
+  max-width: 140px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Section 2: search */
+.section-search { padding: 4px 16px 8px; }
+
+/* Section 3: results */
+.section-results { padding: 4px 16px 12px; }
 .result-list {
   max-height: 420px;
   overflow-y: auto;
