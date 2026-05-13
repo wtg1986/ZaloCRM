@@ -232,7 +232,7 @@ function conflictTooltip(t: string) {
   return 'Cần review thủ công.';
 }
 
-function shortId(id: string | null) {
+function shortId(id: string | null | undefined) {
   if (!id) return '';
   return id.length > 12 ? id.slice(0, 12) + '…' : id;
 }
@@ -250,7 +250,7 @@ function fieldDiffers(group: { contacts: Record<string, unknown>[] }, key: strin
   return distinct.size > 1;
 }
 
-function primaryName(group: { contacts: { id: string; crmName?: string | null; fullName?: string | null }[] }) {
+function primaryName(group: { id: string; contacts: { id: string; crmName?: string | null; fullName?: string | null }[] }) {
   const c = group.contacts.find(x => x.id === selectedPrimary[group.id]);
   return c?.crmName || c?.fullName || 'KH';
 }
