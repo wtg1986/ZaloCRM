@@ -23,8 +23,12 @@ import { zaloRoutes } from './modules/zalo/zalo-routes.js';
 import { chatRoutes } from './modules/chat/chat-routes.js';
 import { chatAttachmentRoutes } from './modules/chat/chat-attachment-routes.js';
 import { contactRoutes } from './modules/contacts/contact-routes.js';
+import { statusRoutes } from './modules/contacts/status-routes.js';
 import { contactSubResourceRoutes } from './modules/contacts/contact-sub-resource-routes.js';
 import { appointmentRoutes } from './modules/contacts/appointment-routes.js';
+import { notesRoutes } from './modules/contacts/notes-routes.js';
+import { crmTagRoutes } from './modules/contacts/crm-tag-routes.js';
+import { zaloLabelsRoutes, startLabelsBackgroundSync } from './modules/zalo/zalo-labels-routes.js';
 import { startAppointmentReminder } from './modules/contacts/appointment-reminder.js';
 import { zinstantProxyRoutes } from './modules/contacts/zinstant-proxy-routes.js';
 import { dashboardRoutes } from './modules/dashboard/dashboard-routes.js';
@@ -130,8 +134,12 @@ async function bootstrap() {
   await app.register(chatRoutes);
   await app.register(chatAttachmentRoutes);
   await app.register(contactRoutes);
+  await app.register(statusRoutes);
   await app.register(contactSubResourceRoutes);
   await app.register(appointmentRoutes);
+  await app.register(notesRoutes);
+  await app.register(crmTagRoutes);
+  await app.register(zaloLabelsRoutes);
   await app.register(zinstantProxyRoutes);
   await app.register(dashboardRoutes);
   await app.register(reportRoutes);
@@ -200,6 +208,7 @@ async function bootstrap() {
     startAppointmentReminder(io);
     startZaloHealthCheck();
     startContactIntelligence();
+    startLabelsBackgroundSync(60_000); // realtime-ish 2-way pull every 60s
     await eventBuffer.start(io);
   } catch (err) {
     logger.error('Failed to start server:', err);

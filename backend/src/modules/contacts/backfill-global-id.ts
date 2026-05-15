@@ -22,7 +22,28 @@ interface ZaloProfile {
   avatar: string;
 }
 
+// Cache placeholder usernames (xuất hiện >5 lần trong DB → là default Zalo trả về
+// cho group UIDs hoặc entity không có username thực). KHÔNG store các giá trị này.
+let placeholderUsernamesCache: Set<string> | null = null;
+async function getPlaceholderUsernames(): Promise<Set<string>> {
+  if (placeholderUsernamesCache) return placeholderUsernamesCache;
+  try {
+    const rows = await prisma.$queryRaw<{ username: string }[]>`
+      SELECT zalo_username AS username
+      FROM contacts
+      WHERE zalo_username IS NOT NULL
+      GROUP BY zalo_username
+      HAVING COUNT(*) > 5
+    `;
+    placeholderUsernamesCache = new Set(rows.map(r => r.username));
+  } catch {
+    placeholderUsernamesCache = new Set();
+  }
+  return placeholderUsernamesCache;
+}
+
 async function resolveProfile(uid: string, accountIds: string[]): Promise<ZaloProfile | null> {
+  const placeholders = await getPlaceholderUsernames();
   for (const accId of accountIds) {
     const instance = zaloPool.getInstance(accId);
     const userApi = instance?.api as {
@@ -34,9 +55,12 @@ async function resolveProfile(uid: string, accountIds: string[]): Promise<ZaloPr
       const profiles = result?.changed_profiles || {};
       const p = profiles[uid] || profiles[`${uid}_0`];
       if (p && (p.globalId || p.username || p.zaloName || p.displayName || p.avatar)) {
+        const username = String(p.username || '');
+        // Reject placeholder username (Zalo SDK default cho group / entity ko có username)
+        const cleanUsername = (username && !placeholders.has(username)) ? username : '';
         return {
           globalId: String(p.globalId || ''),
-          username: String(p.username || ''),
+          username: cleanUsername,
           zaloName: String(p.zaloName || p.zalo_name || p.displayName || p.display_name || ''),
           avatar: String(p.avatar || ''),
         };
@@ -66,16 +90,20 @@ export async function backfillGlobalId(batchSize: number = 50): Promise<Backfill
     return { totalScanned: 0, resolved: 0, failed: 0, autoMergedGroups: 0 };
   }
 
+  // Chỉ scan contacts có ÍT NHẤT 1 user-thread conversation. Skip contacts chỉ tồn
+  // tại trong group convs — getUserInfo(groupUid) trả placeholder username/globalId
+  // dùng chung cho nhiều group (vd 't_ggzbdcmi80' — 79 contacts đã bị bug này).
   const contacts = await prisma.contact.findMany({
     where: {
       zaloUid: { not: null },
       zaloGlobalId: null,
       mergedInto: null,
+      conversations: { some: { threadType: 'user' } },
     },
     select: { id: true, zaloUid: true, orgId: true },
   });
 
-  logger.info(`[backfill] Found ${contacts.length} contact(s) with zaloUid but no zaloGlobalId`);
+  logger.info(`[backfill] Found ${contacts.length} contact(s) with zaloUid but no zaloGlobalId (excluded group-only)`);
 
   let resolved = 0;
   let failed = 0;
@@ -95,6 +123,16 @@ export async function backfillGlobalId(batchSize: number = 50): Promise<Backfill
             zaloUsername: profile.username || null,
           },
         });
+        // Đồng bộ xuống Friend rows của Contact này — globalId/username là
+        // property của Zalo identity, các Friend của cùng Contact (cùng identity)
+        // có chung. Cross-account UID khác nhau, nhưng globalId GIỐNG.
+        await prisma.friend.updateMany({
+          where: { contactId: c.id },
+          data: {
+            zaloGlobalId: profile.globalId,
+            zaloUsername: profile.username || null,
+          },
+        }).catch(() => {});
         resolved++;
       } catch (err) {
         if ((err as { code?: string }).code === 'P2002') {

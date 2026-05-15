@@ -106,9 +106,10 @@
             {{ friendRequestSent ? 'Đã gửi lời mời' : 'Kết bạn' }}
           </v-btn>
           <v-btn
-            v-if="crmContact && crmContact.lastConversationId"
+            v-if="zaloAccountId && info && info.uid"
             size="small" variant="flat" color="primary"
             prepend-icon="mdi-message-text"
+            :loading="openingChat"
             @click="onOpenChat"
           >Nhắn tin</v-btn>
         </div>
@@ -339,10 +340,28 @@ async function onSendFriendRequest() {
   }
 }
 
-function onOpenChat() {
-  if (!crmContact.value?.lastConversationId) return;
-  router.push(`/chat/${crmContact.value.lastConversationId}`);
-  emit('update:modelValue', false);
+// Mở chat 1-1 với UID này TỪ NICK hiện tại (props.zaloAccountId). KHÔNG dùng
+// lastConversationId vì đó có thể là conv của nick khác → bị FilterRail lọc ra.
+// Backend ensure-by-uid find-or-create conv cho cặp (nick, uid) — idempotent.
+const openingChat = ref(false);
+async function onOpenChat() {
+  if (!props.zaloAccountId || !info.value?.uid) return;
+  openingChat.value = true;
+  try {
+    const res = await api.post<{ conversationId: string; created: boolean }>(
+      '/conversations/ensure-by-uid',
+      { zaloAccountId: props.zaloAccountId, uid: info.value.uid },
+    );
+    if (res.data?.created) toast.push('Đã tạo cuộc trò chuyện mới', 'success');
+    router.push(`/chat/${res.data.conversationId}`);
+    emit('update:modelValue', false);
+  } catch (err) {
+    const msg = (err as { response?: { data?: { error?: string } } }).response?.data?.error
+      || 'Không mở được chat';
+    toast.push(msg, 'error');
+  } finally {
+    openingChat.value = false;
+  }
 }
 
 function onOpenContactDetail() {

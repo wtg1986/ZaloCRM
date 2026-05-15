@@ -9,6 +9,9 @@
       <v-tab value="users">Nhân viên</v-tab>
       <v-tab value="teams">Đội nhóm</v-tab>
       <v-tab value="org">Tổ chức</v-tab>
+      <v-tab value="statuses">Trạng thái KH</v-tab>
+      <v-tab value="crm-tags">🏷 Tag CRM</v-tab>
+      <v-tab value="zalo-labels">⚑ Tag Zalo</v-tab>
     </v-tabs>
 
     <v-window v-model="tab">
@@ -124,21 +127,48 @@
       <v-window-item value="org">
         <OrgSettings />
       </v-window-item>
+
+      <!-- Tab 4: Status (Trạng thái KH) -->
+      <v-window-item value="statuses">
+        <StatusManagement />
+      </v-window-item>
+
+      <v-window-item value="crm-tags">
+        <CrmTagManagement />
+      </v-window-item>
+
+      <v-window-item value="zalo-labels">
+        <ZaloLabelsManagement />
+      </v-window-item>
     </v-window>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { useUsers, type OrgUser } from '@/composables/use-users';
 import { useAuthStore } from '@/stores/auth';
 import TeamManagement from '@/components/settings/TeamManagement.vue';
 import OrgSettings from '@/components/settings/OrgSettings.vue';
+import StatusManagement from '@/components/settings/StatusManagement.vue';
+import CrmTagManagement from '@/components/settings/CrmTagManagement.vue';
+import ZaloLabelsManagement from '@/components/settings/ZaloLabelsManagement.vue';
 
 const { users, loading, error, fetchUsers, createUser, updateUser, resetPassword, deleteUser } = useUsers();
 const authStore = useAuthStore();
 
-const tab = ref('users');
+const route = useRoute();
+const router = useRouter();
+const tab = ref<string>((route.query.tab as string) || 'users');
+
+// Sync tab ↔ URL (so deep links + browser back work)
+watch(tab, (v) => {
+  if (v !== route.query.tab) router.replace({ query: { ...route.query, tab: v } });
+});
+watch(() => route.query.tab, (v) => {
+  if (typeof v === 'string' && v && v !== tab.value) tab.value = v;
+});
 const showCreate = ref(false);
 const showEdit = ref(false);
 const showPassword = ref(false);

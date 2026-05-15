@@ -1,23 +1,27 @@
 <template>
-  <span
-    class="care-pill"
-    :class="chipClass"
-    :title="readonly ? '' : 'Click để đổi trạng thái'"
-    @click.stop="onClick"
-  >
-    {{ current.label }}<span v-if="!readonly" class="caret">▾</span>
-
-    <v-menu v-if="!readonly" v-model="open" activator="parent" :close-on-content-click="true" location="bottom start">
-      <v-list density="compact" min-width="200">
-        <v-list-item
-          v-for="opt in CARE_STATUSES"
-          :key="opt.value"
-          :title="opt.label"
-          :class="{ 'is-selected': opt.value === current.value }"
-          @click="select(opt.value)"
-        />
-      </v-list>
-    </v-menu>
+  <v-menu v-if="!readonly" v-model="open" :close-on-content-click="true" location="bottom start">
+    <template #activator="{ props: act }">
+      <span
+        v-bind="act"
+        class="care-pill"
+        :class="chipClass"
+        :title="'Click để đổi trạng thái'"
+      >
+        {{ current.label }}<span class="caret">▾</span>
+      </span>
+    </template>
+    <v-list density="compact" min-width="200">
+      <v-list-item
+        v-for="opt in CARE_STATUSES"
+        :key="opt.value"
+        :title="opt.label"
+        :class="{ 'is-selected': opt.value === current.value }"
+        @click="select(opt.value)"
+      />
+    </v-list>
+  </v-menu>
+  <span v-else class="care-pill" :class="chipClass">
+    {{ current.label }}
   </span>
 </template>
 
@@ -38,10 +42,6 @@ const current = computed(() => {
 });
 const chipClass = computed(() => `chip ${current.value.chip}`);
 
-function onClick() {
-  if (props.readonly) return;
-  open.value = true;
-}
 function select(value: CareStatusValue) {
   emit('update:modelValue', value);
   open.value = false;
@@ -57,7 +57,6 @@ function select(value: CareStatusValue) {
   cursor: pointer;
   white-space: nowrap;
   user-select: none;
-  position: relative;
 }
 .care-pill .caret { font-size: 9px; opacity: 0.65; margin-left: 2px; }
 .care-pill:hover { filter: brightness(0.97); }

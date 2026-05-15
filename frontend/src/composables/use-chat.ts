@@ -53,12 +53,23 @@ interface RawMessage extends Omit<Message, 'reactions' | 'reply'> {
 }
 
 export interface FriendshipInfo {
+  id?: string;
   /** friend | pending_friend | chatting_stranger | ghost | none */
   relationshipKind: string;
   /** none | pending_sent | pending_received | accepted | rejected | removed | blocked */
   friendshipStatus: string;
+  /** Đã từng nhắn 1-1 chưa. False = chỉ kết bạn Zalo / sync */
+  hasConversation?: boolean;
   becameFriendAt: string | null;
   firstMessageAt: string | null;
+  /** Per-pair counters (RIÊNG cặp nick × KH này, KHÔNG phải Contact aggregate) */
+  totalInbound?: number;
+  totalOutbound?: number;
+  /** Per-pair leadScore — sale chăm KH này từ nick này */
+  leadScore?: number;
+  statusRef?: { id: string; name: string; color: string | null; order: number } | null;
+  /** Zalo native labels synced từ Zalo client (Friend.zaloLabels) */
+  zaloLabels?: Array<{ id?: string; name?: string; color?: string }>;
 }
 
 export interface Conversation {
@@ -185,16 +196,35 @@ export function useChat() {
 
     // Normalize quote: Zalo lưu với field 'msg' + 'fromD' thay vì 'content' + 'senderName'.
     // Map sang ReplyMessageRef chuẩn để MessageBubble render đúng.
+    // - msgType derive từ cliMsgType (Zalo numeric enum) hoặc parse attach JSON
+    //   khi msg rỗng (vd reply tin ảnh: msg="" + attach có thumbUrl → infer 'image').
     let reply: ReplyMessageRef | null = null;
     if (quote) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const q = quote as any;
+      const cliType = Number(q.cliMsgType ?? 0);
+      let msgType = String(q.msgType ?? '');
+      if (!msgType && cliType) {
+        // Zalo cliMsgType enum (partial): 1=text, 19=link, 22=video, 23=sticker,
+        // 24=voice, 30=file, 32=image, 38=card, 46=location
+        msgType = ({ 1: 'text', 19: 'link', 22: 'video', 23: 'sticker',
+          24: 'voice', 30: 'file', 32: 'image', 38: 'card', 46: 'location',
+        } as Record<number, string>)[cliType] || '';
+      }
+      // Fallback: parse attach JSON nếu cliMsgType missing
+      if (!msgType && typeof q.attach === 'string' && q.attach.length > 2) {
+        try {
+          const a = JSON.parse(q.attach);
+          if (a.thumbUrl || a.oriUrl) msgType = 'image';
+          else if (a.href) msgType = 'link';
+        } catch { /* ignore */ }
+      }
       reply = {
         msgId: String(q.msgId || q.msg_id || q.globalMsgId || ''),
         cliMsgId: q.cliMsgId,
         content: String(q.msg ?? q.content ?? ''),
         senderName: String(q.fromD ?? q.senderName ?? q.fromName ?? ''),
-        msgType: String(q.msgType ?? ''),
+        msgType,
         uidFrom: String(q.uidFrom ?? q.uid_from ?? ''),
         ts: String(q.ts ?? ''),
         propertyExt: q.propertyExt,
@@ -317,12 +347,21 @@ export function useChat() {
   async function selectConversation(convId: string) {
     selectedConvId.value = convId;
     clearAiState();
+    // Nếu conv không có trong list (filter loại ra HOẶC vừa tạo mới qua
+    // ensure-conversation từ dialog) → refresh list để MessageThread render được.
+    // selectedConv = computed find trong list — list rỗng = blank UI.
+    if (!conversations.value.find(c => c.id === convId)) {
+      await fetchConversations();
+    }
     await fetchMessages(convId);
     try {
       const convDetail = await api.get(`/conversations/${convId}`);
       const conv = conversations.value.find(c => c.id === convId);
-      if (conv && convDetail.data.contact) {
-        conv.contact = convDetail.data.contact;
+      if (conv) {
+        if (convDetail.data.contact) conv.contact = convDetail.data.contact;
+        // friendship per-pair (counter, leadScore, status RIÊNG cặp nick×KH).
+        // KHÔNG fallback contact aggregate vì các trường này khác semantics.
+        if (convDetail.data.friendship !== undefined) conv.friendship = convDetail.data.friendship;
       }
     } catch {
       // Non-critical

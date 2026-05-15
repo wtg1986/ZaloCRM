@@ -133,7 +133,7 @@ export async function applyFriendTransition(args: {
 
   await prisma.$transaction(async (tx) => {
     const existing = await tx.friend.findUnique({
-      where: { zaloAccountId_contactId: { zaloAccountId, contactId } },
+      where: { zaloAccountId_zaloUidInNick: { zaloAccountId, zaloUidInNick } },
       select: { relationshipKind: true, hasConversation: true },
     });
 
@@ -150,7 +150,7 @@ export async function applyFriendTransition(args: {
     if (newFriendshipStatus === 'removed' || newFriendshipStatus === 'blocked') data.removedAt = now;
 
     await tx.friend.upsert({
-      where: { zaloAccountId_contactId: { zaloAccountId, contactId } },
+      where: { zaloAccountId_zaloUidInNick: { zaloAccountId, zaloUidInNick } },
       create: {
         id: randomUUID(),
         orgId,

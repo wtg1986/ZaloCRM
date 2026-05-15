@@ -47,6 +47,10 @@ export interface AggregateMessageInput {
   };
   /** For self/outbound: the CRM user who triggered the send (if known). */
   outboundUserId?: string | null;
+  /** Snapshot tên Zalo của KH nhìn từ nick này (lưu vào Friend.zaloDisplayName). */
+  contactZaloDisplayName?: string | null;
+  /** Snapshot avatar Zalo của KH nhìn từ nick này (Friend.zaloAvatarUrl). */
+  contactZaloAvatarUrl?: string | null;
 }
 
 /**
@@ -180,21 +184,24 @@ export async function applyFriendAggregate(args: AggregateMessageInput): Promise
   try {
     const conv = await prisma.conversation.findUnique({
       where: { id: args.conversationId },
-      select: { contactId: true, zaloAccountId: true, threadType: true, orgId: true },
+      select: { contactId: true, zaloAccountId: true, threadType: true, orgId: true, externalThreadId: true },
     });
     if (!conv?.contactId) return;
     if (conv.threadType === 'group') return;
+    if (!conv.externalThreadId) return;
 
     const { message } = args;
     const sentAt = message.sentAt;
     const isInbound = message.senderType === 'contact';
 
     await prisma.$transaction(async (tx) => {
+      // Friend identity = (zaloAccountId, zaloUidInNick) — externalThreadId của conversation
+      // chính là zaloUidInNick (UID per-account của khách qua nick này).
       const existing = await tx.friend.findUnique({
         where: {
-          zaloAccountId_contactId: {
+          zaloAccountId_zaloUidInNick: {
             zaloAccountId: conv.zaloAccountId,
-            contactId: conv.contactId!,
+            zaloUidInNick: conv.externalThreadId!,
           },
         },
       });
@@ -208,7 +215,11 @@ export async function applyFriendAggregate(args: AggregateMessageInput): Promise
             orgId: conv.orgId,
             contactId: conv.contactId!,
             zaloAccountId: conv.zaloAccountId,
-            zaloUidInNick: '',  // unknown until friendship established
+            zaloUidInNick: conv.externalThreadId!,
+            // Snapshot per-identity tên + avatar Zalo của KH (chỉ set khi inbound,
+            // vì self message senderName là của chính sale chứ không phải KH).
+            zaloDisplayName: isInbound ? (args.contactZaloDisplayName || null) : null,
+            zaloAvatarUrl: isInbound ? (args.contactZaloAvatarUrl || null) : null,
             friendshipStatus: 'none',
             hasConversation: true,
             relationshipKind: 'chatting_stranger',
@@ -233,6 +244,13 @@ export async function applyFriendAggregate(args: AggregateMessageInput): Promise
           updates.lastInboundAt = sentAt;
         }
         updates.totalInbound = { increment: 1 };
+        // Refresh per-identity Zalo display name + avatar (KH có thể đổi tên).
+        if (args.contactZaloDisplayName && args.contactZaloDisplayName !== existing.zaloDisplayName) {
+          updates.zaloDisplayName = args.contactZaloDisplayName;
+        }
+        if (args.contactZaloAvatarUrl && args.contactZaloAvatarUrl !== existing.zaloAvatarUrl) {
+          updates.zaloAvatarUrl = args.contactZaloAvatarUrl;
+        }
       } else {
         if (!existing.lastOutboundAt || existing.lastOutboundAt < sentAt) {
           updates.lastOutboundAt = sentAt;

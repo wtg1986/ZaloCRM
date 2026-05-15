@@ -10,6 +10,7 @@ import { resolveAccount, checkAccess, handleError } from './zalo-route-helpers.j
 import { markFriendRequestSent, applyFriendTransition } from './friend-event-handler.js';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { randomUUID } from 'node:crypto';
+import { normalizePhone } from '../../shared/utils/phone.js';
 
 const BASE = '/api/v1/zalo-accounts/:accountId/friends';
 
@@ -39,13 +40,25 @@ export async function friendRoutes(app: FastifyInstance) {
       if (kind && kind !== 'all') where.relationshipKind = kind;
       if (search.trim()) {
         const q = search.trim();
-        where.contact = {
-          OR: [
-            { fullName: { contains: q, mode: 'insensitive' } },
-            { crmName:  { contains: q, mode: 'insensitive' } },
-            { phone:    { contains: q } },
-          ],
-        };
+        // Phone fast path: normalize input canonical → exact match phoneNormalized
+        // (indexed). Tránh OR contains nhiều variants chậm.
+        const canonicalPhone = normalizePhone(q);
+        const contactOr: Record<string, unknown>[] = [
+          { fullName: { contains: q, mode: 'insensitive' } },
+          { crmName:  { contains: q, mode: 'insensitive' } },
+        ];
+        if (canonicalPhone) contactOr.push({ phoneNormalized: { equals: canonicalPhone } });
+        // Search Friend per-identity + Contact OR ở 1 wrapper.
+        where.AND = [
+          { OR: [
+            { contact: { OR: contactOr } },
+            { zaloUidInNick:   { equals: q } },
+            { zaloGlobalId:    { equals: q } },
+            { zaloUsername:    { equals: q } },
+            { zaloDisplayName: { contains: q, mode: 'insensitive' } },
+            { aliasInNick:     { contains: q, mode: 'insensitive' } },
+          ] },
+        ];
       }
 
       const [friends, total, countsRaw] = await Promise.all([
@@ -60,7 +73,9 @@ export async function friendRoutes(app: FastifyInstance) {
                 birthYear: true,
               },
             },
-            zaloAccount: { select: { id: true, displayName: true, phone: true } },
+            zaloAccount: { select: { id: true, displayName: true, phone: true, avatarUrl: true } },
+            // Per-pair Status (dynamic, từ Status table) — UI dùng cho cột "Trạng thái KH"
+            statusRef: { select: { id: true, name: true, color: true, order: true, isTerminal: true } },
           },
           orderBy: [{ lastInboundAt: 'desc' }, { lastOutboundAt: 'desc' }, { createdAt: 'desc' }],
           skip: (pageNum - 1) * limitNum,
@@ -202,6 +217,47 @@ export async function friendRoutes(app: FastifyInstance) {
       return { data };
     } catch (err) {
       return handleError(reply, err, 'friend-op');
+    }
+  });
+
+  // POST .../friends/lookup-by-phone body {phone} — phone→UID discovery per nick.
+  // Bản chất: cùng KH Zalo có UID khác nhau theo mỗi nick CRM nhìn. Muốn nhắn từ
+  // nick A, phải tìm UID **A nhìn thấy** (zca-js findUser từ session của A).
+  // Trả về uid + tên + avatar perspective của nick này → dùng cho ensure-by-uid.
+  app.post(`${BASE}/lookup-by-phone`, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { accountId } = request.params as { accountId: string };
+    const body = (request.body || {}) as { phone?: string };
+    const user = request.user!;
+    if (!body.phone) return reply.status(400).send({ error: 'phone required' });
+    if (!await checkAccess(request, reply, accountId, 'read')) return;
+    // Normalize: Zalo findUser nhận format không có + (e.g. 84xxx hoặc 0xxx ok cả 2).
+    const phone = body.phone.replace(/[^\d]/g, '');
+    if (phone.length < 9) return reply.status(400).send({ error: 'phone format invalid' });
+    try {
+      await resolveAccount(accountId, user.orgId);
+      const result = await zaloOps.findUser(accountId, phone);
+      const u = (result as Record<string, unknown>) || {};
+      const uid = String(u.uid || u.userId || '') || null;
+      if (!uid) {
+        return reply.send({ found: false, reason: 'no_zalo', detail: 'SĐT này không có Zalo' });
+      }
+      return reply.send({
+        found: true,
+        uid,
+        zaloName: String(u.zaloName || u.zalo_name || u.displayName || u.display_name || '') || null,
+        username: String(u.username || '') || null,
+        globalId: String(u.globalId || '') || null,
+        avatar: String(u.avatar || '') || null,
+        phone,
+      });
+    } catch (err: unknown) {
+      const e = err as { code?: string; message?: string };
+      // ZaloApiError code 216 = no Zalo for phone (zca-js có thể throw thay vì trả empty)
+      if (e?.code === 'NOT_CONNECTED' || e?.code === 'RATE_LIMITED') {
+        return reply.status(503).send({ error: e.code, detail: e.message });
+      }
+      // Default: treat as not found (Zalo phổ biến throw cho phone lạ)
+      return reply.send({ found: false, reason: 'lookup_failed', detail: String(e?.message || err) });
     }
   });
 

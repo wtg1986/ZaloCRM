@@ -1,7 +1,7 @@
 <template>
   <MobileChatView v-if="isMobile" />
   <div v-else class="smax-chat-grid">
-    <!-- COL 1: filter rail -->
+    <!-- COL 1: filter rail (collapse state observed via localStorage trong FilterRail) -->
     <FilterRail
       :accounts="accountList"
       :selected-account-ids="selectedAccountIds"
@@ -16,11 +16,14 @@
         :conversations="conversations"
         :selected-id="selectedConvId"
         :loading="loadingConvs"
+        :accounts="accountList"
+        :selected-account-ids="selectedAccountIds"
         v-model:search="searchQuery"
         @select="onSelectConv"
         @filter-account="onFilterAccount"
         @update:filters="onFiltersUpdate"
         @conversation-moved="onConversationMoved"
+        @compose-opened="onComposeOpened"
       />
     </div>
 
@@ -60,6 +63,7 @@
       v-if="showContactPanel && selectedConv?.contact"
       :contact-id="selectedConv.contact.id"
       :contact="selectedConv.contact"
+      :active-zalo-account-id="selectedConv.zaloAccount?.id ?? null"
       :ai-summary="aiSummary"
       :ai-summary-loading="aiSummaryLoading"
       :ai-sentiment="aiSentiment"
@@ -113,7 +117,12 @@ const {
 const { accounts: zaloAccounts, fetchAccounts: fetchZaloAccounts } = useZaloAccounts();
 const selectedAccountIds = ref<string[]>([]);
 const accountList = computed(() =>
-  (zaloAccounts.value || []).map(a => ({ id: a.id, displayName: a.displayName })),
+  (zaloAccounts.value || []).map(a => ({
+    id: a.id,
+    displayName: a.displayName,
+    avatarUrl: a.avatarUrl ?? null,
+    ownerUserId: a.ownerUserId,
+  })),
 );
 const threadCounts = computed(() => {
   const groups = conversations.value.filter(c => c.threadType === 'group').length;
@@ -191,6 +200,12 @@ function onConversationMoved(_id: string, _tab: string) {
   fetchConversations();
 }
 
+// Khi user tạo conv mới từ "Tin nhắn mới" dialog → refresh list + nav vào conv đó.
+async function onComposeOpened(conversationId: string) {
+  await fetchConversations();
+  router.push({ name: 'Chat', params: { convId: conversationId } });
+}
+
 // Auto-show panel khi chọn conv có contact
 const showContactPanel = ref(true);
 
@@ -231,6 +246,14 @@ watch(
   { deep: false, immediate: false },
 );
 
+// Listener cho zalo-labels-synced custom event (dispatch từ MessageThread sau khi
+// touch/assign/sync labels). Refetch conversation detail để update friendship.zaloLabels.
+function onLabelsSynced() {
+  if (selectedConvId.value) {
+    selectConversation(selectedConvId.value);
+  }
+}
+
 onMounted(async () => {
   if (!isMobile.value) {
     await fetchZaloAccounts();
@@ -243,10 +266,14 @@ onMounted(async () => {
     if (typeof initId === 'string' && initId) {
       selectConversation(initId);
     }
+    window.addEventListener('zalo-labels-synced', onLabelsSynced);
   }
 });
 onUnmounted(() => {
-  if (!isMobile.value) destroySocket();
+  if (!isMobile.value) {
+    destroySocket();
+    window.removeEventListener('zalo-labels-synced', onLabelsSynced);
+  }
 });
 
 let searchTimeout: ReturnType<typeof setTimeout>;
@@ -257,6 +284,10 @@ watch(searchQuery, () => {
 </script>
 
 <style scoped>
+/* ════════ Responsive chat layout — adaptive 4 tier + filter collapse ════════
+   Filter rail có 2 mode: expanded (default tier width) hoặc collapsed (56px).
+   Collapse state qua :has(.filter-rail.collapsed) — auto sync khi FilterRail
+   toggle localStorage. Grid template column 1 thay đổi theo. */
 .smax-chat-grid {
   display: grid;
   grid-template-columns: 290px 380px 1fr 350px;
@@ -269,6 +300,13 @@ watch(searchQuery, () => {
 .smax-chat-grid:has(.smax-info-col:not(:empty)) { /* presence query placeholder */ }
 .smax-chat-grid:not(:has(.smax-info-col)) {
   grid-template-columns: 290px 380px 1fr;
+}
+/* Khi filter rail collapsed → col 1 = 56px */
+.smax-chat-grid:has(.filter-rail.collapsed) {
+  grid-template-columns: 56px 380px 1fr 350px;
+}
+.smax-chat-grid:has(.filter-rail.collapsed):not(:has(.smax-info-col)) {
+  grid-template-columns: 56px 380px 1fr;
 }
 
 .smax-conv-col,
@@ -288,11 +326,41 @@ watch(searchQuery, () => {
   background: var(--smax-grey-100);
 }
 
-/* Responsive: collapse filter rail < 1280px, then conv list < 1024px */
-@media (max-width: 1280px) {
-  .smax-chat-grid { grid-template-columns: 0 380px 1fr 350px; }
+/* HD+ compact: thu nhỏ chút để thread có thêm space */
+@media (max-width: 1700px) {
+  .smax-chat-grid { grid-template-columns: 260px 340px 1fr 310px; }
+  .smax-chat-grid:not(:has(.smax-info-col)) {
+    grid-template-columns: 260px 340px 1fr;
+  }
+  .smax-chat-grid:has(.filter-rail.collapsed) {
+    grid-template-columns: 56px 340px 1fr 310px;
+  }
+  .smax-chat-grid:has(.filter-rail.collapsed):not(:has(.smax-info-col)) {
+    grid-template-columns: 56px 340px 1fr;
+  }
+}
+/* Tight: filter rail vẫn show nhưng compact */
+@media (max-width: 1440px) {
+  .smax-chat-grid { grid-template-columns: 240px 320px 1fr 280px; }
+  .smax-chat-grid:not(:has(.smax-info-col)) {
+    grid-template-columns: 240px 320px 1fr;
+  }
+  .smax-chat-grid:has(.filter-rail.collapsed) {
+    grid-template-columns: 56px 320px 1fr 280px;
+  }
+  .smax-chat-grid:has(.filter-rail.collapsed):not(:has(.smax-info-col)) {
+    grid-template-columns: 56px 320px 1fr;
+  }
+}
+/* < 1200: drop filter rail */
+@media (max-width: 1200px) {
+  .smax-chat-grid { grid-template-columns: 0 320px 1fr 280px; }
+  .smax-chat-grid:not(:has(.smax-info-col)) {
+    grid-template-columns: 0 320px 1fr;
+  }
   .smax-chat-grid > :first-child { display: none; }
 }
+/* < 1024: drop info panel too — chỉ còn conv list + thread */
 @media (max-width: 1024px) {
   .smax-chat-grid { grid-template-columns: 320px 1fr; }
   .smax-chat-grid > :first-child,

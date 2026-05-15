@@ -43,6 +43,50 @@
               :model-value="(conversation.contact.status as string | null) || 'new'"
               @update:model-value="onCareStatusChange"
             />
+            <!-- Zalo Real label dropdown — Zalo-native UI (single-select, list all labels in account)
+                 Hỗ trợ cả user thread (UID) + group thread (groupId). Chỉ ẩn nếu không có externalThreadId. -->
+            <v-menu v-if="conversation.externalThreadId && conversation.zaloAccount" :close-on-content-click="false" location="bottom start">
+              <template #activator="{ props: actProps }">
+                <button v-bind="actProps" class="zlbl-trigger" :title="currentLabel ? `Đang gắn: ${currentLabel.text}` : 'Chưa gắn tag Zalo'">
+                  <span class="zlbl-icon" :style="currentLabel ? `color: ${currentLabel.color}` : ''">🏷</span>
+                  <span v-if="currentLabel" class="zlbl-current-name" :style="`color: ${currentLabel.color}`">
+                    {{ currentLabel.emoji ? currentLabel.emoji + ' ' : '' }}{{ currentLabel.text }}
+                  </span>
+                  <span v-else class="zlbl-empty">Phân loại</span>
+                  <span class="zlbl-caret">▾</span>
+                </button>
+              </template>
+              <div class="zlbl-dropdown zalo-native">
+                <div v-if="loadingAllLabels && !allLabels.length" class="zlbl-loading">Đang tải…</div>
+
+                <div v-else-if="!allLabels.length" class="zlbl-empty-state">
+                  Tài khoản chưa có thẻ phân loại nào.<br />
+                  <button class="zlbl-inline-sync" @click="onSyncLabels">⟳ Đồng bộ từ Zalo</button>
+                </div>
+
+                <div v-else class="zlbl-options">
+                  <button
+                    v-for="lbl in allLabels"
+                    :key="lbl.id"
+                    class="zlbl-option"
+                    :class="{ active: currentLabel?.id === lbl.id }"
+                    @click="onPickLabel(lbl)"
+                  >
+                    <span class="zlbl-flag" :style="`color: ${lbl.color}`">⚑</span>
+                    <span class="zlbl-name">
+                      <span v-if="lbl.emoji">{{ lbl.emoji }} </span>{{ lbl.text }}
+                    </span>
+                    <span v-if="currentLabel?.id === lbl.id" class="zlbl-check">✓</span>
+                  </button>
+                </div>
+
+                <div class="zlbl-divider"></div>
+                <button class="zlbl-manage" @click="goToLabelsSettings">
+                  <span class="manage-icon">⚙</span>
+                  Quản lý thẻ phân loại
+                </button>
+              </div>
+            </v-menu>
           </div>
 
           <!-- Row 2: nick avatar + nick name | in/out | last online -->
@@ -59,9 +103,13 @@
               {{ conversation.zaloAccount?.displayName || '—' }}
             </span>
             <span class="ch-sep">|</span>
-            <span class="msg-counts" :title="`${msgInCount} tin đến / ${msgOutCount} tin gửi`">
+            <span
+              class="msg-counts"
+              :title="`Tin nhắn 1-1 RIÊNG cặp nick × KH này: ${msgInCount} đến / ${msgOutCount} gửi. (Tổng toàn KH ${contactTotalIn}/${contactTotalOut} qua mọi nick chăm)`"
+            >
               <span class="cnt-in">{{ msgInCount }}</span>↘
               <span class="cnt-out">{{ msgOutCount }}</span>↗
+              <span class="cnt-scope">per nick này</span>
             </span>
             <span class="ch-sep">|</span>
             <span class="last-online" :class="{ 'is-online': isOnline }">
@@ -116,10 +164,18 @@
             <template #activator="{ props: act }">
               <button class="icon-btn" v-bind="act" title="Thêm">⋮</button>
             </template>
-            <v-list density="compact" min-width="180">
+            <v-list density="compact" min-width="220">
               <v-list-item prepend-icon="mdi-history" title="Lịch sử hội thoại" @click="toast.push('Lịch sử: chưa implement')" />
               <v-list-item prepend-icon="mdi-magnify" title="Tìm trong hội thoại" @click="toast.push('Tìm: chưa implement')" />
               <v-list-item prepend-icon="mdi-note-edit-outline" title="Ghi chú nhanh" @click="onOpenNote" />
+              <v-divider />
+              <!-- Merge KH này vào KH khác (transfer Friends + delete source Contact) -->
+              <v-list-item
+                v-if="conversation.contact"
+                prepend-icon="mdi-merge"
+                title="🔗 Gắn vào KH Cha (merge)"
+                @click="showLinkParentDialog = true"
+              />
               <v-divider />
               <v-list-item prepend-icon="mdi-bell-off-outline" title="Tắt thông báo" @click="toast.push('Mute: chưa implement')" />
               <v-list-item prepend-icon="mdi-flag-outline" title="Báo cáo" @click="toast.push('Report: chưa implement')" />
@@ -210,6 +266,14 @@
 
       <!-- ════════ Input area: toolbar trên textarea (Smax-style) ════════ -->
       <div class="input-area">
+        <!-- CRM tag pills (Smax-style) — chỉ KH chat 1-1, ẩn ở group -->
+        <TagCrmBar
+          v-if="conversation.contact && conversation.threadType === 'user'"
+          :contact-id="conversation.contact.id"
+          :model-value="contactTags"
+          @update:model-value="onUpdateTags"
+        />
+
         <ReplyPreviewBar
           :message="(replyingTo || editingMessage) ?? null"
           :mode="editingMessage ? 'edit' : 'reply'"
@@ -340,6 +404,14 @@
       :uid="userInfoUid"
       :zalo-account-id="conversation?.zaloAccount?.id || ''"
     />
+
+    <!-- Link parent dialog -->
+    <LinkParentDialog
+      v-if="conversation?.contact"
+      v-model="showLinkParentDialog"
+      :child-contact-id="conversation.contact.id"
+      @linked="onLinkedParent"
+    />
   </div>
 </template>
 
@@ -355,11 +427,13 @@ import QuickTemplatePopup from '@/components/chat/quick-template-popup.vue';
 import MessageBubble from '@/components/chat/message-bubble.vue';
 import StickerPicker from '@/components/chat/StickerPicker.vue';
 import ZaloUserInfoDialog from '@/components/chat/ZaloUserInfoDialog.vue';
+import LinkParentDialog from '@/components/chat/LinkParentDialog.vue';
 import MessageContextMenu from '@/components/chat/message-context-menu.vue';
 import TypingIndicator from '@/components/chat/typing-indicator.vue';
 import ReplyPreviewBar from '@/components/chat/reply-preview-bar.vue';
 import ForwardDialog from '@/components/chat/forward-dialog.vue';
 import RichTextEditor from '@/components/chat/rich-text-editor.vue';
+import TagCrmBar from '@/components/chat/TagCrmBar.vue';
 import { useToast } from '@/composables/use-toast';
 import { groupAvatarStore } from '@/composables/use-group-avatar-cache';
 
@@ -410,6 +484,12 @@ const showContextMenu = ref(false);
 const contextMsg = ref<Message | null>(null);
 const contextPos = ref({ x: 0, y: 0 });
 const showForwardDialog = ref(false);
+const showLinkParentDialog = ref(false);
+
+async function onLinkedParent() {
+  toast.success('Đã merge KH này vào KH Cha — conversations + friends đã chuyển');
+  emit('refresh-thread');
+}
 const editorRef = ref<InstanceType<typeof RichTextEditor> | null>(null);
 const currentTypers = computed(() => props.typingUsers || []);
 
@@ -449,8 +529,155 @@ const genderChipClass = computed(() => {
 });
 
 // ── Message counts (per-pair, lấy từ contact aggregate cho user thread) ──────
-const msgInCount = computed(() => props.conversation?.contact?.totalInbound ?? 0);
-const msgOutCount = computed(() => props.conversation?.contact?.totalOutbound ?? 0);
+// Per-pair counter (Friend.totalInbound/Outbound) cho cặp nick × KH HIỆN TẠI.
+// KHÔNG fallback contact aggregate — conv mới chưa có msg thì hiện 0 mới đúng,
+// còn aggregate tổng across nicks chỉ dùng tooltip để sale biết bối cảnh.
+const msgInCount = computed(() => props.conversation?.friendship?.totalInbound ?? 0);
+
+/* ── Zalo Real labels — Zalo-native dropdown UX ─────────────────────────
+ * - allLabels: master list của account (fetch GET /zalo-accounts/:id/labels)
+ * - currentLabel: label đang gán cho friend (lấy từ conversation.friendship.zaloLabels[0])
+ * - Single-select: click 1 label → POST /friends/:friendId/zalo-label {labelId}
+ *   Nếu label đó đang active → click sẽ unassign (labelId=null).
+ * - Sync 2-way: trigger /labels/touch (cooldown 5s) khi conversation đổi.
+ * ───────────────────────────────────────────────────────────────────── */
+type AccountLabelView = {
+  id: number;
+  text: string;
+  color: string;
+  emoji: string | null;
+  offset: number;
+  assignedCount: number;
+  assignedTo?: boolean;  // server flag — true nếu thread hiện tại đang gắn label này
+};
+
+const allLabels = ref<AccountLabelView[]>([]);
+const loadingAllLabels = ref(false);
+
+// currentLabel: tìm label có assignedTo=true (do BE trả về khi pass threadId).
+// Fallback: nếu allLabels chưa load, dùng friendship.zaloLabels[0] (chỉ cho user threads).
+const currentLabel = computed<AccountLabelView | null>(() => {
+  const fromList = allLabels.value.find(l => l.assignedTo);
+  if (fromList) return fromList;
+  const fs = props.conversation?.friendship;
+  const labels = Array.isArray(fs?.zaloLabels) ? fs!.zaloLabels : [];
+  if (!labels.length) return null;
+  const first = labels[0] as { id?: number | string; name?: string; color?: string; emoji?: string };
+  return {
+    id: Number(first.id) || 0,
+    text: first.name || '—',
+    color: first.color || '#999',
+    emoji: first.emoji || null,
+    offset: 0,
+    assignedCount: 0,
+  };
+});
+
+async function fetchAllLabels(accountId: string, threadId?: string | null) {
+  if (!accountId) return;
+  loadingAllLabels.value = true;
+  try {
+    const { api: apiClient } = await import('@/api/index');
+    const query = threadId ? `?threadId=${encodeURIComponent(threadId)}` : '';
+    const { data } = await apiClient.get(`/zalo-accounts/${accountId}/labels${query}`);
+    allLabels.value = (data.labels || []) as AccountLabelView[];
+  } catch (err) {
+    console.error('[zalo-labels] fetch all error', err);
+  } finally {
+    loadingAllLabels.value = false;
+  }
+}
+
+/* Sync-on-demand: khi đổi conversation → touch endpoint (cooldown 5s server-side).
+ * Sau touch xong → re-fetch master list với threadId hiện tại để có assignedTo flag. */
+async function touchAccountSync(accountId: string, threadId?: string | null) {
+  if (!accountId) return;
+  try {
+    const { api: apiClient } = await import('@/api/index');
+    await apiClient.post(`/zalo-accounts/${accountId}/labels/touch`);
+    await fetchAllLabels(accountId, threadId);
+    window.dispatchEvent(new CustomEvent('zalo-labels-synced', { detail: { accountId } }));
+  } catch (err) {
+    // Silent — touch luôn 200 ngay cả khi error
+  }
+}
+
+// Watch conversation switch → sync labels (cooldown 5s server-side) + fetch master list cho thread hiện tại
+watch(() => props.conversation?.id, (newId, oldId) => {
+  if (!newId || newId === oldId) return;
+  const accId = props.conversation?.zaloAccount?.id;
+  const threadId = props.conversation?.externalThreadId;
+  if (accId) {
+    void fetchAllLabels(accId, threadId);  // BE trả assignedTo flag cho thread hiện tại
+    void touchAccountSync(accId, threadId);
+  }
+}, { immediate: true });
+
+/* Optimistic UI: update assignedTo flags + currentLabel NGAY (không disable mờ chờ).
+ * API call chạy background. Nếu fail → rollback to snapshot + toast error. */
+async function onPickLabel(label: AccountLabelView) {
+  const accId = props.conversation?.zaloAccount?.id;
+  const threadId = props.conversation?.externalThreadId;
+  if (!accId || !threadId) return;
+
+  // Toggle: nếu đang active → unassign (null), ngược lại assign labelId
+  const labelId = currentLabel.value?.id === label.id ? null : label.id;
+
+  // Snapshot trước khi mutate để rollback nếu fail
+  const snapshot = allLabels.value.map(l => ({ ...l }));
+
+  // Optimistic mutation: clear assignedTo trên mọi label rồi set flag trên label được chọn.
+  allLabels.value = allLabels.value.map(l => ({
+    ...l,
+    assignedTo: labelId !== null && l.id === labelId,
+  }));
+
+  toast.success(labelId ? `✓ Đã gắn "${label.text}"` : `✓ Đã bỏ tag`);
+
+  // API call background — không await, không disable UI
+  try {
+    const { api: apiClient } = await import('@/api/index');
+    await apiClient.post(`/zalo-accounts/${accId}/labels/assign-thread`, { threadId, labelId });
+    // Reconcile với BE (BE đã re-sync nên trả về authoritative state)
+    void fetchAllLabels(accId, threadId);
+    window.dispatchEvent(new CustomEvent('zalo-labels-synced', { detail: { accountId: accId } }));
+  } catch (err: any) {
+    // Rollback optimistic mutation
+    allLabels.value = snapshot;
+    toast.error(err.response?.data?.error || 'Không gán được tag — đã hoàn tác');
+  }
+}
+
+async function onSyncLabels() {
+  const accId = props.conversation?.zaloAccount?.id;
+  const threadId = props.conversation?.externalThreadId;
+  if (!accId) return;
+  try {
+    const { api: apiClient } = await import('@/api/index');
+    const { data } = await apiClient.post(`/zalo-accounts/${accId}/labels/sync`);
+    toast.success(`✓ Sync ${data.labels.length} tag · ${data.friendsUpdated} KH`);
+    await fetchAllLabels(accId, threadId);
+    window.dispatchEvent(new CustomEvent('zalo-labels-synced', { detail: { accountId: accId } }));
+  } catch (err: any) {
+    toast.error(err.response?.data?.error || 'Sync thất bại');
+  }
+}
+
+function goToLabelsSettings() {
+  window.location.assign('/settings?tab=zalo-labels');
+}
+
+// CRM tags pulled from contact — local mirror to avoid stale prop after PATCH.
+const contactTags = ref<string[]>([]);
+watch(() => props.conversation?.contact?.tags, (t) => {
+  contactTags.value = Array.isArray(t) ? [...t] : [];
+}, { immediate: true });
+function onUpdateTags(next: string[]) {
+  contactTags.value = next;
+}
+const msgOutCount = computed(() => props.conversation?.friendship?.totalOutbound ?? 0);
+const contactTotalIn = computed(() => props.conversation?.contact?.totalInbound ?? 0);
+const contactTotalOut = computed(() => props.conversation?.contact?.totalOutbound ?? 0);
 
 // ── Last online status ──────────────────────────────────────────────────────
 // MOCK: dùng contact.lastInboundAt làm proxy. Chờ wire endpoint
@@ -881,11 +1108,15 @@ function handleSend() {
   emit('cancel-reply-edit');
 }
 
-function applySuggestion(text?: string) {
+// Áp dụng suggestion: chèn text vào editor + focus caret cuối → user Enter gửi luôn.
+async function applySuggestion(text?: string) {
   const t = text || props.aiSuggestion;
   if (!t) return;
   inputText.value = t;
-  toast.success('Đã chèn vào ô chat');
+  // setContent ở RichTextEditor là async qua watch — đợi nextTick để editor update
+  // xong rồi mới focus 'end' (caret tại cuối text). Tránh focus trước khi content mount.
+  await nextTick();
+  setTimeout(() => editorRef.value?.focus('end'), 30);
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -930,12 +1161,40 @@ watch(() => props.messages.length, async () => {
 
 // Khi đổi sang conv khác → reset scroll xuống đáy ngay + retry sau khi messages
 // load xong (messages.length thay đổi async sau khi parent fetch).
+// + Auto-focus input editor → gõ tin được ngay không cần click thêm
+//   (matching Zalo/Messenger native behavior). Skip mobile để tránh bật bàn phím ảo.
 watch(() => props.conversation?.id, async (newId) => {
   if (!newId) return;
   await nextTick();
   scrollToBottom();
-  // Retry sau khi messages async load — scrollToBottom đã có retry 100/400/1000ms
-  // nhưng nếu messages chưa thay đổi sau lần đầu thì watch messages.length sẽ trigger tiếp.
+  // Auto-focus editor — skip mobile (window.innerWidth < 768) tránh bật keyboard
+  if (typeof window !== 'undefined' && window.innerWidth >= 768) {
+    setTimeout(() => editorRef.value?.focus(), 80);
+  }
+});
+
+// Auto-apply AI suggestion ngay khi generate xong (transition empty → non-empty).
+// User chỉ cần bấm ✨ → text vào input + caret cuối → Enter gửi luôn.
+watch(() => props.aiSuggestion, (next, prev) => {
+  if (next && next !== prev) {
+    applySuggestion(next);
+  }
+});
+
+// Auto-focus editor khi vào Reply / Edit mode — con trỏ chuột nằm trong ô input
+// để user gõ luôn, không cần click thêm. Watch cả 2 prop: trigger bằng external
+// (click reply trong context menu, hoặc từ swipe action sau này).
+watch(() => props.replyingTo?.id, async (id) => {
+  if (id) {
+    await nextTick();
+    editorRef.value?.focus();
+  }
+});
+watch(() => props.editingMessage?.id, async (id) => {
+  if (id) {
+    await nextTick();
+    editorRef.value?.focus();
+  }
 });
 </script>
 
@@ -977,7 +1236,10 @@ watch(() => props.conversation?.id, async (newId) => {
 .ch-name {
   font-weight: 600; font-size: 16px;
   color: var(--smax-text);
-  min-width: 0; flex-shrink: 1; max-width: 320px;
+  /* min-width: 0 + flex-shrink để ellipsis hoạt động khi thread narrow.
+     max-width: 100% theo flex parent, không cố định 320px (HD thread ~360px
+     trừ avatar+actions, max-width 320 sẽ đè actions). */
+  min-width: 0; flex-shrink: 1;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ch-sep {
@@ -1034,6 +1296,16 @@ watch(() => props.conversation?.id, async (newId) => {
 }
 .msg-counts .cnt-out {
   color: var(--smax-primary); font-weight: 600;
+}
+.msg-counts .cnt-scope {
+  font-size: 9.5px;
+  color: var(--smax-grey-700);
+  background: var(--smax-grey-100);
+  padding: 1px 5px;
+  border-radius: 4px;
+  margin-left: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.2px;
 }
 .last-online {
   display: inline-flex; align-items: center; gap: 4px;
@@ -1126,8 +1398,12 @@ watch(() => props.conversation?.id, async (newId) => {
 }
 
 /* ════════ Messages ════════ */
+/* min-height: 0 cho phép flex item co lại khi input-area mở rộng (toolbar slide-in,
+   ReplyPreviewBar, AISuggestBar) — nếu thiếu, flexbox default min-height: auto
+   khiến container vượt parent → input đè lên đoạn chat. */
 .messages {
-  flex: 1; overflow-y: auto;
+  flex: 1; min-height: 0;
+  overflow-y: auto; overflow-anchor: auto;
   padding: 14px 26px;
   display: flex; flex-direction: column; gap: 5px;
 }
@@ -1267,4 +1543,133 @@ watch(() => props.conversation?.id, async (newId) => {
 .input-row :deep(.emoji-trigger:hover) {
   background: var(--smax-grey-100);
 }
+
+/* ── Zalo Real labels dropdown — Zalo-native style ────────────────────── */
+.zlbl-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--smax-grey-100, #f5f6fa);
+  border: 1px solid var(--smax-grey-200, #ebedf0);
+  border-radius: 11px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 2px 8px;
+  cursor: pointer;
+  color: var(--smax-grey-700);
+  transition: background 0.12s, border-color 0.12s, box-shadow 0.12s;
+  max-width: 180px;
+}
+.zlbl-trigger:hover {
+  background: var(--smax-primary-soft, #e3f2fd);
+  border-color: var(--smax-primary, #2962ff);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+.zlbl-icon { font-size: 12px; flex-shrink: 0; }
+.zlbl-current-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.zlbl-empty { font-style: italic; color: var(--smax-grey-500); }
+.zlbl-caret { font-size: 9px; opacity: 0.6; flex-shrink: 0; }
+
+/* Dropdown chính — match Zalo native: rộng, padding 0, list items full-width */
+.zlbl-dropdown.zalo-native {
+  min-width: 280px;
+  max-width: 320px;
+  max-height: 480px;
+  overflow-y: auto;
+  background: #fff;
+  padding: 6px 0;
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.15);
+}
+.zlbl-loading,
+.zlbl-empty-state {
+  padding: 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--smax-grey-500);
+}
+.zlbl-empty-state { font-style: italic; }
+.zlbl-inline-sync {
+  margin-top: 8px;
+  background: var(--smax-primary-soft, #e3f2fd);
+  color: var(--smax-primary, #2962ff);
+  border: none;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.zlbl-inline-sync:hover { filter: brightness(0.95); }
+
+.zlbl-options {
+  display: flex;
+  flex-direction: column;
+}
+.zlbl-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: transparent;
+  border: none;
+  padding: 9px 14px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  width: 100%;
+  text-align: left;
+  transition: background 0.1s;
+}
+.zlbl-option:hover { background: var(--smax-grey-50, #f5f6fa); }
+.zlbl-option.active { background: rgba(33, 150, 243, 0.06); }
+.zlbl-option.busy { opacity: 0.5; cursor: progress; }
+.zlbl-option:disabled { cursor: not-allowed; }
+.zlbl-flag {
+  font-size: 16px;
+  width: 18px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.zlbl-name {
+  flex: 1;
+  color: var(--smax-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.zlbl-option.active .zlbl-name { font-weight: 600; }
+.zlbl-check {
+  color: var(--smax-primary, #2962ff);
+  font-size: 14px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.zlbl-divider {
+  height: 1px;
+  background: var(--smax-grey-100);
+  margin: 4px 0;
+}
+.zlbl-manage {
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 10px 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--smax-grey-700);
+  font-family: inherit;
+  text-align: left;
+  transition: background 0.1s;
+}
+.zlbl-manage:hover { background: var(--smax-grey-50); color: var(--smax-primary); }
+.manage-icon { font-size: 14px; }
 </style>

@@ -69,6 +69,11 @@ const routes = [
     meta: { requiresAuth: true },
   },
   {
+    // Legacy route — redirect to /settings?tab=zalo-labels
+    path: '/settings/zalo-labels',
+    redirect: { path: '/settings', query: { tab: 'zalo-labels' } },
+  },
+  {
     path: '/api-settings',
     name: 'ApiSettings',
     component: () => import('@/views/ApiSettingsView.vue'),

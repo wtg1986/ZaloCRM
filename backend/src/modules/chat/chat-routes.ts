@@ -111,54 +111,88 @@ export async function chatRoutes(app: FastifyInstance) {
       page = '1',
       limit = '50',
       search = '',
-      accountId = '',
+      accountId = '',          // single — backward compat
+      accountIds = '',          // CSV — multi-nick support (preferred)
       // Filter params
       unread = '',
       unreplied = '',
       from = '',
       to = '',
+      dateFrom = '',            // alias cho FilterRail
+      dateTo = '',
       tags = '',
       tab = '',
+      threadType = '',          // user | group
+      // Mới — Contact level
+      statusId = '',
+      assignedUserId = '',
+      hasZalo = '',             // true | false | unknown
+      scoreMin = '',
+      scoreMax = '',
+      // Mới — Friend level (per-pair aggregate)
+      relationshipKindAny = '', // CSV: friend,pending_friend,chatting_stranger,ghost
     } = request.query as QueryParams;
 
     const where: any = { orgId: user.orgId };
     if (tab) where.tab = tab;
-    if (accountId) where.zaloAccountId = accountId;
+    if (threadType === 'user' || threadType === 'group') where.threadType = threadType;
+
+    // accountIds CSV ưu tiên hơn accountId single (multi-nick FE)
+    const accountIdList = accountIds
+      ? accountIds.split(',').map(s => s.trim()).filter(Boolean)
+      : accountId ? [accountId] : [];
+    if (accountIdList.length === 1) where.zaloAccountId = accountIdList[0];
+    else if (accountIdList.length > 1) where.zaloAccountId = { in: accountIdList };
+
+    // Contact-level filter — gộp vào where.contact nested
+    const contactWhere: Record<string, unknown> = {};
     if (search) {
-      where.contact = {
-        OR: [
-          { fullName: { contains: search, mode: 'insensitive' } },
-          { crmName: { contains: search, mode: 'insensitive' } },
-          { phone: { contains: search } },
-        ],
-      };
+      contactWhere.OR = [
+        { fullName: { contains: search, mode: 'insensitive' } },
+        { crmName: { contains: search, mode: 'insensitive' } },
+        { phone: { contains: search } },
+      ];
     }
+    if (statusId) contactWhere.statusId = statusId;
+    if (assignedUserId) contactWhere.assignedUserId = assignedUserId;
+    if (hasZalo === 'true') contactWhere.hasZalo = true;
+    else if (hasZalo === 'false') contactWhere.hasZalo = false;
+    else if (hasZalo === 'unknown') contactWhere.hasZalo = null;
+    if (scoreMin || scoreMax) {
+      const range: { gte?: number; lte?: number } = {};
+      if (scoreMin) range.gte = Number(scoreMin) || 0;
+      if (scoreMax) range.lte = Number(scoreMax) || 100;
+      contactWhere.leadScore = range;
+    }
+    if (tags) {
+      const tagList = tags.split(',').map((t) => t.trim()).filter(Boolean);
+      if (tagList.length > 0) contactWhere.tags = { array_contains: tagList };
+    }
+    // KH có ít nhất 1 Friend với kind trong list (Friend level filter)
+    if (relationshipKindAny) {
+      const kinds = relationshipKindAny.split(',').map(s => s.trim()).filter(Boolean);
+      if (kinds.length > 0) contactWhere.friends = { some: { relationshipKind: { in: kinds } } };
+    }
+    if (Object.keys(contactWhere).length > 0) where.contact = contactWhere;
 
     // Advanced filters
     if (unread === 'true') where.unreadCount = { gt: 0 };
     if (unreplied === 'true') where.isReplied = false;
-    if (from || to) {
+
+    // Date range — accept cả from/to legacy lẫn dateFrom/dateTo mới
+    const dFrom = dateFrom || from;
+    const dTo = dateTo || to;
+    if (dFrom || dTo) {
       where.lastMessageAt = {};
-      if (from) {
-        const d = new Date(from);
+      if (dFrom) {
+        const d = new Date(dFrom);
         if (!isNaN(d.getTime())) where.lastMessageAt.gte = d;
       }
-      if (to) {
-        const d = new Date(to);
+      if (dTo) {
+        const d = new Date(dTo + 'T23:59:59.999Z');
         if (!isNaN(d.getTime())) where.lastMessageAt.lte = d;
       }
-      // Remove empty filter if both dates invalid
       if (Object.keys(where.lastMessageAt).length === 0) delete where.lastMessageAt;
-    }
-    if (tags) {
-      const tagList = tags.split(',').map((t) => t.trim()).filter(Boolean);
-      if (tagList.length > 0) {
-        // Merge with any existing contact filter from search
-        where.contact = {
-          ...where.contact,
-          tags: { array_contains: tagList },
-        };
-      }
     }
 
     // Members can only see conversations from Zalo accounts they have access to
@@ -168,8 +202,10 @@ export async function chatRoutes(app: FastifyInstance) {
         select: { zaloAccountId: true },
       });
       const accessibleIds = accessibleAccounts.map((a) => a.zaloAccountId);
-      if (accountId && accessibleIds.includes(accountId)) {
-        where.zaloAccountId = accountId;
+      // Intersect requested account list với accessible
+      if (accountIdList.length > 0) {
+        const allowed = accountIdList.filter(id => accessibleIds.includes(id));
+        where.zaloAccountId = allowed.length === 1 ? allowed[0] : { in: allowed };
       } else {
         where.zaloAccountId = { in: accessibleIds };
       }
@@ -242,11 +278,38 @@ export async function chatRoutes(app: FastifyInstance) {
     });
     if (!conversation) return reply.status(404).send({ error: 'Not found' });
 
-    let friendship: { relationshipKind: string; friendshipStatus: string; becameFriendAt: Date | null; firstMessageAt: Date | null } | null = null;
-    if (conversation.threadType === 'user' && conversation.contactId) {
+    // Friend per-pair info — counters + leadScore + status RIÊNG cặp (nick, KH).
+    // Header chat phải dùng per-pair counter (KHÔNG dùng contact.totalInbound aggregate
+    // — đó là tổng across-nicks, conv mới chưa có msg = 0 mới đúng).
+    let friendship: {
+      id: string;
+      relationshipKind: string;
+      friendshipStatus: string;
+      hasConversation: boolean;
+      becameFriendAt: Date | null;
+      firstMessageAt: Date | null;
+      totalInbound: number;
+      totalOutbound: number;
+      leadScore: number;
+      statusRef: { id: string; name: string; color: string | null; order: number } | null;
+      zaloLabels: unknown;
+    } | null = null;
+    if (conversation.threadType === 'user' && conversation.contactId && conversation.externalThreadId) {
       const f = await prisma.friend.findUnique({
-        where: { zaloAccountId_contactId: { zaloAccountId: conversation.zaloAccountId, contactId: conversation.contactId } },
-        select: { relationshipKind: true, friendshipStatus: true, becameFriendAt: true, firstMessageAt: true },
+        where: { zaloAccountId_zaloUidInNick: { zaloAccountId: conversation.zaloAccountId, zaloUidInNick: conversation.externalThreadId } },
+        select: {
+          id: true,
+          relationshipKind: true,
+          friendshipStatus: true,
+          hasConversation: true,
+          becameFriendAt: true,
+          firstMessageAt: true,
+          totalInbound: true,
+          totalOutbound: true,
+          leadScore: true,
+          statusRef: { select: { id: true, name: true, color: true, order: true } },
+          zaloLabels: true,
+        },
       });
       friendship = f;
     }

@@ -13,26 +13,31 @@ model Organization {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  teams         Team[]
-  users         User[]
-  zaloAccounts  ZaloAccount[]
-  contacts        Contact[]
-  conversations   Conversation[]
-  appointments    Appointment[]
-  activityLogs    ActivityLog[]
-  dailyStats      DailyMessageStat[]
-  settings        AppSetting[]
-  duplicateGroups DuplicateGroup[]
-  savedReports    SavedReport[]
-  integrations    Integration[]
-  automationRules AutomationRule[]
-  messageTemplates MessageTemplate[]
-  aiConfig      AiConfig?
-  aiSuggestions AiSuggestion[]
+  teams               Team[]
+  users               User[]
+  zaloAccounts        ZaloAccount[]
+  contacts            Contact[]
+  conversations       Conversation[]
+  appointments        Appointment[]
+  activityLogs        ActivityLog[]
+  dailyStats          DailyMessageStat[]
+  settings            AppSetting[]
+  duplicateGroups     DuplicateGroup[]
+  savedReports        SavedReport[]
+  integrations        Integration[]
+  automationRules     AutomationRule[]
+  messageTemplates    MessageTemplate[]
+  aiConfig            AiConfig?
+  aiSuggestions       AiSuggestion[]
   pinnedConversations PinnedConversation[]
   groupPolls          GroupPoll[]
-  friendshipAttempts     FriendshipAttempt[]
-  friends                Friend[]
+  friendshipAttempts  FriendshipAttempt[]
+  friends             Friend[]
+  statuses            Status[]
+  parentCandidates    ParentCandidate[]
+  notes               Note[]
+  zaloLabels          ZaloLabel[]
+  crmTags             CrmTag[]
 
   @@map("organizations")
 }
@@ -63,16 +68,18 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  org              Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  team             Team?               @relation(fields: [teamId], references: [id])
-  zaloAccounts     ZaloAccount[]
-  zaloAccess       ZaloAccountAccess[]
-  assignedContacts Contact[]           @relation("AssignedContacts")
-  appointments     Appointment[]
-  statusChangedAppointments Appointment[] @relation("AppointmentStatusChanger")
-  repliedMessages  Message[]           @relation("RepliedMessages")
-  activityLogs     ActivityLog[]
-  messageTemplates MessageTemplate[]
+  org                       Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  team                      Team?               @relation(fields: [teamId], references: [id])
+  zaloAccounts              ZaloAccount[]
+  zaloAccess                ZaloAccountAccess[]
+  assignedContacts          Contact[]           @relation("AssignedContacts")
+  appointments              Appointment[]
+  statusChangedAppointments Appointment[]       @relation("AppointmentStatusChanger")
+  repliedMessages           Message[]           @relation("RepliedMessages")
+  activityLogs              ActivityLog[]
+  messageTemplates          MessageTemplate[]
+  authoredNotes             Note[]              @relation("NoteAuthor")
+  noteReactions             NoteReaction[]
 
   @@map("users")
 }
@@ -92,13 +99,14 @@ model ZaloAccount {
   lastConnectedAt DateTime? @map("last_connected_at")
   createdAt       DateTime  @default(now()) @map("created_at")
 
-  org           Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  owner         User                @relation(fields: [ownerUserId], references: [id])
-  access        ZaloAccountAccess[]
-  conversations Conversation[]
-  dailyStats    DailyMessageStat[]
+  org                Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  owner              User                @relation(fields: [ownerUserId], references: [id])
+  access             ZaloAccountAccess[]
+  conversations      Conversation[]
+  dailyStats         DailyMessageStat[]
   friendshipAttempts FriendshipAttempt[]
   friends            Friend[]
+  zaloLabelsList     ZaloLabel[]
 
   @@map("zalo_accounts")
 }
@@ -128,18 +136,29 @@ model Contact {
   zaloGlobalId     String?   @map("zalo_global_id")
   zaloUsername     String?   @map("zalo_username")
   phone            String?
+  // Canonical SĐT (84xxx no +/space) — auto-derive từ `phone` qua normalizePhone()
+  // trên mọi write path. Index để search exact O(log n), dedup chính xác cross-format
+  // (0xxx ↔ 84xxx ↔ +84xxx cùng map về 84xxx). Hiện chỉ index phone chính; phone2/3
+  // vẫn search via contains variants vì ít dùng.
+  phoneNormalized  String?   @map("phone_normalized")
   email            String?   @map("email")
   fullName         String?   @map("full_name")
   crmName          String?   @map("crm_name")
   avatarUrl        String?   @map("avatar_url")
-  source           String?   // FB, TT, GT, CN, phone_import, etc.
+  source           String? // FB, TT, GT, CN, phone_import, etc.
   sourceDate       DateTime? @map("source_date")
   firstContactDate DateTime? @map("first_contact_date")
-  status           String?   @default("new") // new/contacted/interested/converted/lost
+  status           String?   @default("new") // LEGACY: new/contacted/interested/converted/lost — giữ 1 release, sau drop. Field mới: statusId FK -> Status table
+  statusId         String?   @map("status_id")
+  // ── Parent-Child (KH cha gom nhiều KH con — cross-Zalo-identity human-level link) ───
+  // Khác mergedInto (hard-merge same Zalo identity, secondary hidden): parentContactId
+  // soft-link, child visible, aggregate status/score/hasZalo từ children. Canonical son
+  // làm cha → parentContactId=NULL cho cha, các con khác trỏ về.
+  parentContactId  String?   @map("parent_contact_id")
   nextAppointment  DateTime? @map("next_appointment")
   assignedUserId   String?   @map("assigned_user_id")
   notes            String?
-  tags             Json      @default("[]")     // CRM tags do sale gắn ("vip","quan_tam_3pn",...). Auto tag prefix "auto:"
+  tags             Json      @default("[]") // CRM tags do sale gắn ("vip","quan_tam_3pn",...). Auto tag prefix "auto:"
   metadata         Json      @default("{}")
   leadScore        Int       @default(0) @map("lead_score")
   lastActivity     DateTime? @map("last_activity")
@@ -148,34 +167,34 @@ model Contact {
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
   // ── Discovery via friend-request attempt ─────────────────────────────────
-  hasZalo            Boolean?  @map("has_zalo")             // null=unknown, true=verified yes, false=verified no
+  hasZalo            Boolean?  @map("has_zalo") // null=unknown, true=verified yes, false=verified no
   zaloLookupAt       DateTime? @map("zalo_lookup_at")
   zaloLookupAttempts Int       @default(0) @map("zalo_lookup_attempts")
-  importBatchId      String?   @map("import_batch_id")      // soft FK -> phone_list_imports.id (model later)
+  importBatchId      String?   @map("import_batch_id") // soft FK -> phone_list_imports.id (model later)
 
   // ── Compliance ─────────────────────────────────────────────────────────────
-  consentStatus      String    @default("implicit") @map("consent_status") // implicit/granted/revoked
-  consentRevokedAt   DateTime? @map("consent_revoked_at")
-  consentSource      String?   @map("consent_source")       // form_landing, opt_in_msg, manual, ...
+  consentStatus    String    @default("implicit") @map("consent_status") // implicit/granted/revoked
+  consentRevokedAt DateTime? @map("consent_revoked_at")
+  consentSource    String?   @map("consent_source") // form_landing, opt_in_msg, manual, ...
 
   // ── Multi-phone ────────────────────────────────────────────────────────────
-  phone2             String?   @map("phone_2")
-  phone3             String?   @map("phone_3")
-  phonesExtra        Json      @default("[]") @map("phones_extra")  // [{phone,label},...]
+  phone2      String? @map("phone_2")
+  phone3      String? @map("phone_3")
+  phonesExtra Json    @default("[]") @map("phones_extra") // [{phone,label},...]
 
   // ── Demographic / BĐS profile ──────────────────────────────────────────────
-  province           String?
-  district           String?
-  ward               String?
-  addressLine        String?   @map("address_line")
-  gender             String?    // male/female/other/unknown
-  birthYear          Int?       @map("birth_year")
-  birthDate          DateTime? @map("birth_date") @db.Date
-  occupation         String?
-  incomeRange        String?   @map("income_range")
-  socialFacebook     String?   @map("social_facebook")
-  socialTiktok       String?   @map("social_tiktok")
-  preferredLang      String?   @default("vi") @map("preferred_lang")
+  province       String?
+  district       String?
+  ward           String?
+  addressLine    String?   @map("address_line")
+  gender         String? // male/female/other/unknown
+  birthYear      Int?      @map("birth_year")
+  birthDate      DateTime? @map("birth_date") @db.Date
+  occupation     String?
+  incomeRange    String?   @map("income_range")
+  socialFacebook String?   @map("social_facebook")
+  socialTiktok   String?   @map("social_tiktok")
+  preferredLang  String?   @default("vi") @map("preferred_lang")
 
   // ── Aggregate: tin nhắn cuối từ KHÁCH (inbound) ───────────────────────────
   lastInboundAt        DateTime? @map("last_inbound_at")
@@ -188,7 +207,7 @@ model Contact {
   lastOutboundMessageId       String?   @map("last_outbound_message_id")
   lastOutboundPreview         String?   @map("last_outbound_preview")
   lastOutboundType            String?   @map("last_outbound_type")
-  lastOutboundByUserId        String?   @map("last_outbound_by_user_id")        // soft FK
+  lastOutboundByUserId        String?   @map("last_outbound_by_user_id") // soft FK
   lastOutboundByZaloAccountId String?   @map("last_outbound_by_zalo_account_id") // soft FK
 
   // ── Aggregate: tương tác cuối (reaction/recall/edit/...) ──────────────────
@@ -197,27 +216,35 @@ model Contact {
   lastInteractionPayload Json?     @map("last_interaction_payload")
 
   // ── Counters (cache) ───────────────────────────────────────────────────────
-  totalInbound       Int       @default(0) @map("total_inbound")
-  totalOutbound      Int       @default(0) @map("total_outbound")
-  totalAppointments  Int       @default(0) @map("total_appointments")
+  totalInbound      Int @default(0) @map("total_inbound")
+  totalOutbound     Int @default(0) @map("total_outbound")
+  totalAppointments Int @default(0) @map("total_appointments")
 
-  org               Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  assignedUser      User?        @relation("AssignedContacts", fields: [assignedUserId], references: [id])
-  mergedIntoContact Contact?     @relation("ContactMerge", fields: [mergedInto], references: [id])
-  mergedFrom        Contact[]    @relation("ContactMerge")
+  org               Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  assignedUser      User?               @relation("AssignedContacts", fields: [assignedUserId], references: [id])
+  mergedIntoContact Contact?            @relation("ContactMerge", fields: [mergedInto], references: [id])
+  mergedFrom        Contact[]           @relation("ContactMerge")
+  parent            Contact?            @relation("ContactFather", fields: [parentContactId], references: [id], onDelete: SetNull)
+  children          Contact[]           @relation("ContactFather")
+  statusRef         Status?             @relation(fields: [statusId], references: [id], onDelete: SetNull)
   conversations     Conversation[]
   appointments      Appointment[]
   attempts          FriendshipAttempt[]
   friends           Friend[]
+  contactNotes      Note[]
 
   // Per-Contact counters (cache from Friend rows; updated by friend-aggregate hooks)
   acceptedNicksCount Int @default(0) @map("accepted_nicks_count")
   pendingNicksCount  Int @default(0) @map("pending_nicks_count")
   chattingNicksCount Int @default(0) @map("chatting_nicks_count")
 
-  @@index([orgId, phone])
-  @@index([orgId, zaloUid])
   @@unique([orgId, zaloGlobalId])
+  @@index([orgId, phone])
+  @@index([orgId, phoneNormalized])
+  @@index([orgId, zaloUid])
+  // Default sort cho ContactsView list: tương tác mới nhất lên đầu.
+  // Cần index để tránh seq scan khi 4500+ contacts.
+  @@index([orgId, lastActivity])
   @@index([orgId, zaloUsername])
   @@index([orgId, mergedInto])
   @@index([orgId, hasZalo])
@@ -230,30 +257,57 @@ model Contact {
   @@index([phone2])
   @@index([phone3])
   @@index([orgId, acceptedNicksCount])
+  @@index([orgId, parentContactId])
+  @@index([orgId, statusId])
   @@map("contacts")
+}
+
+// Status (Trạng thái KH) — per-org config replacing Contact.status enum cũ.
+// Default seed 8 status: Mới/Tiếp cận/Hẹn gặp/Nóng/Tiềm năng/Chốt/Thất Bại/Mất.
+// `order` Int: dùng cho aggregation Cha = MAX(sons.status.order).
+// `isTerminal`: status kết thúc (Chốt/Thất Bại/Mất) — UI có thể style khác.
+// `isDefault`: 1 status được flag default cho Contact mới (Mới).
+model Status {
+  id         String   @id @default(uuid())
+  orgId      String   @map("org_id")
+  name       String
+  order      Int      @default(0)
+  color      String?
+  isTerminal Boolean  @default(false) @map("is_terminal")
+  isDefault  Boolean  @default(false) @map("is_default")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  contacts Contact[]
+  friends  Friend[]
+
+  @@unique([orgId, name])
+  @@index([orgId, order])
+  @@map("statuses")
 }
 
 // A chat thread between a Zalo account and a contact (or group)
 model Conversation {
-  id               String    @id @default(uuid())
-  orgId            String    @map("org_id")
-  zaloAccountId    String    @map("zalo_account_id")
-  contactId        String?   @map("contact_id")
-  threadType       String    @default("user") // user, group
-  externalThreadId String?   @map("external_thread_id")
+  id                String    @id @default(uuid())
+  orgId             String    @map("org_id")
+  zaloAccountId     String    @map("zalo_account_id")
+  contactId         String?   @map("contact_id")
+  threadType        String    @default("user") // user, group
+  externalThreadId  String?   @map("external_thread_id")
   // Group-specific (chỉ set khi threadType=group; resolve qua getGroupInfo từ zca-js)
-  groupName        String?   @map("group_name")
-  groupAvatarUrl   String?   @map("group_avatar_url")
-  groupMembersCount Int?     @map("group_members_count")
-  lastMessageAt    DateTime? @map("last_message_at")
-  unreadCount      Int       @default(0) @map("unread_count")
-  isReplied        Boolean   @default(true) @map("is_replied")
-  tab              String    @default("main") @map("tab") // main, other
-  createdAt        DateTime  @default(now()) @map("created_at")
+  groupName         String?   @map("group_name")
+  groupAvatarUrl    String?   @map("group_avatar_url")
+  groupMembersCount Int?      @map("group_members_count")
+  lastMessageAt     DateTime? @map("last_message_at")
+  unreadCount       Int       @default(0) @map("unread_count")
+  isReplied         Boolean   @default(true) @map("is_replied")
+  tab               String    @default("main") @map("tab") // main, other
+  createdAt         DateTime  @default(now()) @map("created_at")
 
-  org           Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  zaloAccount   ZaloAccount   @relation(fields: [zaloAccountId], references: [id], onDelete: Cascade)
-  contact       Contact?      @relation(fields: [contactId], references: [id])
+  org           Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  zaloAccount   ZaloAccount          @relation(fields: [zaloAccountId], references: [id], onDelete: Cascade)
+  contact       Contact?             @relation(fields: [contactId], references: [id])
   messages      Message[]
   aiSuggestions AiSuggestion[]
   pins          PinnedConversation[]
@@ -277,7 +331,7 @@ model Message {
   contentType     String    @default("text") @map("content_type") // text, image, file, sticker, voice, video, link
   attachments     Json      @default("[]")
   quote           Json?     @map("quote")
-  albumKey        String?   @map("album_key")   // Zalo group_layout_id — identifies multi-image albums
+  albumKey        String?   @map("album_key") // Zalo group_layout_id — identifies multi-image albums
   albumIndex      Int?      @map("album_index") // 0-based position within album
   albumTotal      Int?      @map("album_total") // total items in album
   isDeleted       Boolean   @default(false) @map("is_deleted")
@@ -286,8 +340,8 @@ model Message {
   repliedByUserId String?   @map("replied_by_user_id")
   createdAt       DateTime  @default(now()) @map("created_at")
 
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  repliedBy    User?        @relation("RepliedMessages", fields: [repliedByUserId], references: [id])
+  conversation Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  repliedBy    User?             @relation("RepliedMessages", fields: [repliedByUserId], references: [id])
   reactions    MessageReaction[]
 
   @@unique([conversationId, zaloMsgId])
@@ -313,10 +367,10 @@ model Appointment {
   createdAt       DateTime @default(now()) @map("created_at")
 
   // Nguồn + link Zalo
-  source        String   @default("manual") // "manual" | "zalo"
-  externalRef   String?  @map("external_ref") // Zalo reminderId (params.actions[0].data.reminderId)
-  zaloMessageId String?  @map("zalo_message_id") // FK mềm → Message.id (không cascade, giữ data nếu msg xoá)
-  emoji         String?  // ⏰ 🔔 từ params hoặc default
+  source        String  @default("manual") // "manual" | "zalo"
+  externalRef   String? @map("external_ref") // Zalo reminderId (params.actions[0].data.reminderId)
+  zaloMessageId String? @map("zalo_message_id") // FK mềm → Message.id (không cascade, giữ data nếu msg xoá)
+  emoji         String? // ⏰ 🔔 từ params hoặc default
 
   // Status audit — track ai đổi status cuối cùng + lúc nào (cron auto-flip không set)
   statusChangedByUserId String?   @map("status_changed_by_user_id")
@@ -326,11 +380,109 @@ model Appointment {
   org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
   assignedUser User?        @relation(fields: [assignedUserId], references: [id])
+  fromNotes    Note[]       @relation("NoteAppointment")
 
   @@unique([orgId, externalRef])
   @@index([source])
   @@index([orgId, appointmentDate])
   @@map("appointments")
+}
+
+// CRM-style notes on a contact — Facebook-comment-like with flat thread (parentNoteId nullable, depth=1).
+// Manager có thể reply vào note của sale. Reaction emoji per (note, user, emoji).
+// AI có thể parse note body ("Thứ 6 gọi lại khách") → suggest Appointment (linked via Appointment.noteId).
+model Note {
+  id                     String   @id @default(uuid())
+  orgId                  String   @map("org_id")
+  contactId              String   @map("contact_id")
+  parentNoteId           String?  @map("parent_note_id") // null = root note, set = reply (chỉ 1 cấp)
+  authorUserId           String   @map("author_user_id")
+  body                   String   @db.Text
+  // Khi user bấm "🤖 Tạo lịch hẹn" trên note → set FK tới appointment được tạo.
+  // Cho phép hiện badge "đã tạo lịch" trên note + tránh tạo trùng.
+  suggestedAppointmentId String?  @map("suggested_appointment_id")
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  org         Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  contact     Contact        @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  author      User           @relation("NoteAuthor", fields: [authorUserId], references: [id])
+  parent      Note?          @relation("NoteThread", fields: [parentNoteId], references: [id], onDelete: Cascade)
+  replies     Note[]         @relation("NoteThread")
+  reactions   NoteReaction[]
+  appointment Appointment?   @relation("NoteAppointment", fields: [suggestedAppointmentId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, contactId, createdAt])
+  @@index([parentNoteId])
+  @@map("notes")
+}
+
+// CRM tag — tag SYSTEM-LEVEL do org tự định nghĩa (vd "vip", "quan_tâm", "hot_lead").
+// Khác ZaloLabel (Zalo native, sync 2-way với Zalo SDK).
+// Contact.tags JSON array of strings tham chiếu CrmTag.name. Nếu name không match
+// trong CrmTag table → vẫn cho lưu (free-text) nhưng FE hint user thêm vào table.
+model CrmTag {
+  id          String   @id @default(uuid())
+  orgId       String   @map("org_id")
+  name        String                                   // unique per org, dùng làm reference key
+  color       String   @default("#90A4AE")             // hex color
+  emoji       String?                                  // optional unicode emoji prefix
+  description String?                                  // mô tả mục đích, vd "Khách quan tâm dự án EGV"
+  category    String?                                  // gom nhóm (vd "Mức độ", "Nguồn", "Hành vi")
+  order       Int      @default(0)                     // sort order trong settings
+  isActive    Boolean  @default(true) @map("is_active")
+  usageCount  Int      @default(0) @map("usage_count") // denorm — cập nhật khi recompute
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, name])
+  @@index([orgId, category])
+  @@map("crm_tags")
+}
+
+// Zalo native labels — synced từ Zalo SDK getLabels() per nick.
+// 1 label = (zaloAccountId, zaloLabelId). conversations[] là list externalThreadId
+// được assign label đó. Update qua SDK updateLabels({labelData, version}).
+// Settings page hiển thị bảng + cho phép edit color/text → write back qua SDK.
+model ZaloLabel {
+  id            String   @id @default(uuid())
+  orgId         String   @map("org_id")
+  zaloAccountId String   @map("zalo_account_id")
+  zaloLabelId   Int      @map("zalo_label_id")     // numeric ID từ Zalo
+  textKey       String   @map("text_key")          // SDK textKey field
+  text          String                              // tên label hiển thị
+  color         String                              // hex from SDK
+  emoji         String?                             // unicode emoji
+  offset        Int      @default(0)                // sort order trong Zalo client
+  version       Int      @default(0)                // server-version của bulk
+  conversations Json     @default("[]")             // string[] externalThreadId
+  createTime    BigInt?  @map("create_time")        // SDK epoch
+  syncedAt      DateTime @default(now()) @map("synced_at")
+
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  zaloAccount ZaloAccount  @relation(fields: [zaloAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([zaloAccountId, zaloLabelId])
+  @@index([orgId, zaloAccountId])
+  @@map("zalo_labels")
+}
+
+// Emoji reaction trên 1 note. 1 user có thể reaction nhiều emoji khác nhau, không trùng cùng 1 emoji.
+model NoteReaction {
+  id        String   @id @default(uuid())
+  noteId    String   @map("note_id")
+  userId    String   @map("user_id")
+  emoji     String // 1 emoji unicode: 👍 ❤️ 😂 😮 😢 🎉 ...
+  createdAt DateTime @default(now()) @map("created_at")
+
+  note Note @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([noteId, userId, emoji])
+  @@index([noteId])
+  @@map("note_reactions")
 }
 
 // Audit trail for user actions
@@ -374,7 +526,7 @@ model DailyMessageStat {
 model Integration {
   id         String    @id @default(uuid())
   orgId      String    @map("org_id")
-  type       String    // google_sheets | telegram | facebook | zapier
+  type       String // google_sheets | telegram | facebook | zapier
   name       String    @default("")
   config     Json      @default("{}") // credentials + settings
   enabled    Boolean   @default(true)
@@ -392,9 +544,9 @@ model Integration {
 model SyncLog {
   id            String   @id @default(uuid())
   integrationId String   @map("integration_id")
-  direction     String   // import | export
+  direction     String // import | export
   recordCount   Int      @default(0) @map("record_count")
-  status        String   // success | partial | failed
+  status        String // success | partial | failed
   errorMessage  String?  @map("error_message")
   createdAt     DateTime @default(now()) @map("created_at")
 
@@ -435,12 +587,32 @@ model DuplicateGroup {
   @@map("duplicate_groups")
 }
 
+// Parent-Child candidate — detector cron đề xuất cặp contact c-thể là cùng person
+// nhưng khác globalId (vd cùng tên + cùng phone) → sale duyệt accept/dismiss.
+// Khác DuplicateGroup: KHÔNG auto-merge; user decide explicit.
+model ParentCandidate {
+  id         String    @id @default(uuid())
+  orgId      String    @map("org_id")
+  contactIds String[]  @map("contact_ids") // 2+ contact id trong cụm gợi ý
+  matchType  String    @map("match_type") // name_phone | name_birthDate | name_email
+  confidence Float     @default(0.9)
+  dismissed  Boolean   @default(false)
+  resolvedAt DateTime? @map("resolved_at") // set khi sale accept hoặc dismiss
+  resolvedBy String?   @map("resolved_by") // userId
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, dismissed, createdAt])
+  @@map("parent_candidates")
+}
+
 // Saved analytics report configuration
 model SavedReport {
   id        String   @id @default(uuid())
   orgId     String   @map("org_id")
   name      String
-  type      String   // conversion_funnel, team_performance, response_time, custom
+  type      String // conversion_funnel, team_performance, response_time, custom
   config    Json     @default("{}")
   createdBy String   @map("created_by")
   createdAt DateTime @default(now()) @map("created_at")
@@ -451,19 +623,19 @@ model SavedReport {
 }
 
 model AutomationRule {
-  id          String   @id @default(uuid())
-  orgId       String   @map("org_id")
+  id          String    @id @default(uuid())
+  orgId       String    @map("org_id")
   name        String
   description String?
   trigger     String
-  conditions  Json     @default("[]")
-  actions     Json     @default("[]")
-  enabled     Boolean  @default(true)
-  priority    Int      @default(0)
-  runCount    Int      @default(0) @map("run_count")
+  conditions  Json      @default("[]")
+  actions     Json      @default("[]")
+  enabled     Boolean   @default(true)
+  priority    Int       @default(0)
+  runCount    Int       @default(0) @map("run_count")
   lastRunAt   DateTime? @map("last_run_at")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
 
   org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
@@ -505,15 +677,15 @@ model AiConfig {
 }
 
 model AiSuggestion {
-  id             String    @id @default(uuid())
-  orgId          String    @map("org_id")
-  conversationId String    @map("conversation_id")
-  messageId      String?   @map("message_id")
+  id             String   @id @default(uuid())
+  orgId          String   @map("org_id")
+  conversationId String   @map("conversation_id")
+  messageId      String?  @map("message_id")
   type           String
   content        String
   confidence     Float
-  accepted       Boolean   @default(false)
-  createdAt      DateTime  @default(now()) @map("created_at")
+  accepted       Boolean  @default(false)
+  createdAt      DateTime @default(now()) @map("created_at")
 
   org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
@@ -535,7 +707,7 @@ model MessageReaction {
   reactorId     String   @map("reactor_id") // CRM user.id hoặc Zalo UID — xem reactorSource
   reactorSource String   @default("crm") @map("reactor_source") // "crm" | "zalo"
   reactorName   String?  @map("reactor_name")
-  emoji         String   // ❤️ 👍 😆 😮 😭 😡 — hoặc raw Zalo code khi sync
+  emoji         String // ❤️ 👍 😆 😮 😭 😡 — hoặc raw Zalo code khi sync
   createdAt     DateTime @default(now()) @map("created_at")
 
   message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
@@ -563,18 +735,18 @@ model PinnedConversation {
 
 // Group poll (ported from openzca group poll)
 model GroupPoll {
-  id               String    @id @default(uuid())
-  orgId            String    @map("org_id")
-  zaloAccountId    String    @map("zalo_account_id")
-  groupExternalId  String    @map("group_external_id")
-  zaloPollId       String    @map("zalo_poll_id")
-  question         String
-  options          Json      @default("[]") // [{id, text, voteCount}]
-  isMultiChoice    Boolean   @default(false) @map("is_multi_choice")
-  isAnonymous      Boolean   @default(false) @map("is_anonymous")
-  isLocked         Boolean   @default(false) @map("is_locked")
-  expiresAt        DateTime? @map("expires_at")
-  createdAt        DateTime  @default(now()) @map("created_at")
+  id              String    @id @default(uuid())
+  orgId           String    @map("org_id")
+  zaloAccountId   String    @map("zalo_account_id")
+  groupExternalId String    @map("group_external_id")
+  zaloPollId      String    @map("zalo_poll_id")
+  question        String
+  options         Json      @default("[]") // [{id, text, voteCount}]
+  isMultiChoice   Boolean   @default(false) @map("is_multi_choice")
+  isAnonymous     Boolean   @default(false) @map("is_anonymous")
+  isLocked        Boolean   @default(false) @map("is_locked")
+  expiresAt       DateTime? @map("expires_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
 
   org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
@@ -618,48 +790,75 @@ model FriendshipAttempt {
 //   - first message exchanged with KH not yet friend → hasConversation=true, friendshipStatus=none
 // Drives both /friends UI (per-nick view) and Contact aggregate counters.
 model Friend {
-  id                 String    @id @default(uuid())
-  orgId              String    @map("org_id")
-  contactId          String    @map("contact_id")
-  zaloAccountId      String    @map("zalo_account_id")
-  zaloUidInNick      String    @map("zalo_uid_in_nick")
+  id            String @id @default(uuid())
+  orgId         String @map("org_id")
+  contactId     String @map("contact_id")
+  zaloAccountId String @map("zalo_account_id")
+  zaloUidInNick String @map("zalo_uid_in_nick")
 
   // ── State (2 dimensions + 1 derived) ────────────────────────────────────
-  friendshipStatus   String    @default("none") @map("friendship_status")
-                     // none | pending_sent | pending_received | accepted | rejected | removed | blocked
-  hasConversation    Boolean   @default(false) @map("has_conversation")
-  relationshipKind   String    @default("none") @map("relationship_kind")
-                     // friend | pending_friend | chatting_stranger | ghost | none
+  friendshipStatus String  @default("none") @map("friendship_status")
+  // none | pending_sent | pending_received | accepted | rejected | removed | blocked
+  hasConversation  Boolean @default(false) @map("has_conversation")
+  relationshipKind String  @default("none") @map("relationship_kind")
+  // friend | pending_friend | chatting_stranger | ghost | none
 
   // ── Zalo-side metadata ──────────────────────────────────────────────────
   aliasInNick        String?   @map("alias_in_nick")
-  zaloLabels         Json      @default("[]") @map("zalo_labels")          // [{id,name,color}]
+  // Tên + avatar Zalo của KH NHÌN TỪ NICK NÀY (per-identity).
+  // Set khi message-handler dispatch tin → applyFriendAggregate. Dùng cho
+  // FE hiển thị Friend row + promote-to-parent (new Contact name).
+  zaloDisplayName    String?   @map("zalo_display_name")
+  zaloAvatarUrl      String?   @map("zalo_avatar_url")
+  // Globally-unique identifiers — về mặt bản chất thuộc Zalo identity per-Friend,
+  // không thuộc Contact (KH Cha). Cùng Zalo identity nhìn từ nhiều nick có cùng
+  // globalId/username (per-viewer chỉ khác zaloUidInNick). KH Cha aggregate qua
+  // computeAggregateDisplay: trùng tất cả Friend → cha hiện chung; khác → "đa".
+  zaloGlobalId       String?   @map("zalo_global_id")
+  zaloUsername       String?   @map("zalo_username")
+  zaloLabels         Json      @default("[]") @map("zalo_labels") // [{id,name,color}]
   zaloLabelsSyncedAt DateTime? @map("zalo_labels_synced_at")
+  // Tag CRM per-pair — sale gắn tag RIÊNG cho cặp (nick này × KH này), KHÁC với
+  // Contact.tags (cấp KH chung). Vd "ưu tiên với nick này", "đã follow-up từ
+  // nick này". Format: ["tag1", "tag2", ...]. Tag Cha aggregate hiện ở
+  // ChatContactPanel section "Tag CRM hệ thống cấp KH".
+  crmTagsPerNick     Json      @default("[]") @map("crm_tags_per_nick")
 
   // ── Lifecycle timestamps ────────────────────────────────────────────────
-  becameFriendAt     DateTime? @map("became_friend_at")
-  removedAt          DateTime? @map("removed_at")
-  firstMessageAt     DateTime? @map("first_message_at")  // first message exchanged across this pair
+  becameFriendAt DateTime? @map("became_friend_at")
+  removedAt      DateTime? @map("removed_at")
+  firstMessageAt DateTime? @map("first_message_at") // first message exchanged across this pair
 
   // ── Per-pair aggregates (set-if-newer / increment from message hooks) ──
-  lastInboundAt      DateTime? @map("last_inbound_at")
-  lastOutboundAt     DateTime? @map("last_outbound_at")
-  lastInteractionAt  DateTime? @map("last_interaction_at")
-  totalInbound       Int       @default(0) @map("total_inbound")
-  totalOutbound      Int       @default(0) @map("total_outbound")
+  lastInboundAt     DateTime? @map("last_inbound_at")
+  lastOutboundAt    DateTime? @map("last_outbound_at")
+  lastInteractionAt DateTime? @map("last_interaction_at")
+  totalInbound      Int       @default(0) @map("total_inbound")
+  totalOutbound     Int       @default(0) @map("total_outbound")
 
-  createdAt          DateTime  @default(now()) @map("created_at")
-  updatedAt          DateTime  @updatedAt      @map("updated_at")
+  // ── Per-pair CRM state (mỗi nick chăm có status + score RIÊNG) ────────
+  // Contact (KH Cha) aggregate: displayStatus = MAX(friends.statusRef.order),
+  // displayLeadScore = AVG(friends.leadScore), displayHasZalo = friends.length > 0.
+  statusId  String? @map("status_id")
+  statusRef Status? @relation(fields: [statusId], references: [id], onDelete: SetNull)
+  leadScore Int     @default(0) @map("lead_score")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   contact     Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
   zaloAccount ZaloAccount  @relation(fields: [zaloAccountId], references: [id], onDelete: Cascade)
 
-  @@unique([zaloAccountId, contactId])
+  // KHÔNG unique theo (zaloAccountId, contactId) vì 1 Contact (KH Cha) có thể có
+  // nhiều Friend per cùng zaloAccount khi merge từ các Zalo identity khác nhau
+  // của cùng person. Identity thật được enforce qua (zaloAccountId, zaloUidInNick).
   @@unique([zaloAccountId, zaloUidInNick])
+  @@index([zaloAccountId, contactId])
   @@index([orgId, contactId])
-  @@index([zaloAccountId, relationshipKind])              // /friends tab filtering
+  @@index([zaloAccountId, relationshipKind]) // /friends tab filtering
   @@index([zaloAccountId, friendshipStatus])
   @@index([orgId, relationshipKind])
+  @@index([orgId, statusId])
   @@map("friends")
 }

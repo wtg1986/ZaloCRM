@@ -19,24 +19,31 @@
     </header>
 
     <!-- ════════ Toolbar ════════ -->
-    <div class="toolbar">
+    <!-- ════════ Toolbar Row 1: search + 4 filter chính + actions ════════ -->
+    <div class="toolbar toolbar-primary">
       <input
         v-model="filters.search"
         class="toolbar-search"
-        placeholder="🔍 Tìm tên / SĐT / nội dung tin nhắn…"
+        placeholder="🔍 Tìm tên / SĐT / UID / @username / globalId…"
         @input="debouncedFetch"
       />
-      <select v-model="filters.source" @change="fetchContacts">
+      <select v-model="filters.threadType" @change="fetchContacts" title="Loại hội thoại">
+        <option value="">Loại: tất cả</option>
+        <option value="user">👤 User 1-1</option>
+        <option value="group">👥 Nhóm</option>
+      </select>
+      <select v-model="filters.source" @change="fetchContacts" title="Nguồn KH">
         <option value="">Tất cả nguồn</option>
         <option v-for="o in SOURCE_OPTIONS" :key="o.value" :value="o.value">{{ o.text }}</option>
       </select>
-      <select v-model="filters.status" @change="fetchContacts">
-        <option value="">Tất cả trạng thái</option>
-        <option v-for="o in STATUS_OPTIONS" :key="o.value" :value="o.value">{{ o.text }}</option>
+      <select v-model="filters.statusId" @change="fetchContacts" title="Trạng thái KH (dynamic)">
+        <option value="">Tất cả trạng thái KH</option>
+        <option v-for="s in allMasterStatuses" :key="s.id" :value="s.id">{{ s.name }}</option>
       </select>
-      <input type="date" v-model="dateFrom" class="date-input" />
-      <span class="date-separator">→</span>
-      <input type="date" v-model="dateTo" class="date-input" />
+      <select v-model="filters.assignedUserId" @change="fetchContacts" title="Sale phụ trách KH">
+        <option value="">Tất cả sale</option>
+        <option v-for="u in allUsers" :key="u.id" :value="u.id">{{ u.fullName }}</option>
+      </select>
 
       <span class="spacer"></span>
 
@@ -44,15 +51,103 @@
         ⊜ Trùng lặp
         <span v-if="duplicateTotal > 0" class="btn-badge">{{ duplicateTotal }}</span>
       </button>
+      <button class="btn" @click="showCandidateDialog = true">
+        💡 Gợi ý KH Cha
+        <span v-if="candidateCount > 0" class="btn-badge">{{ candidateCount }}</span>
+      </button>
       <button class="btn">⬇ Xuất</button>
+      <v-menu :close-on-content-click="false">
+        <template #activator="{ props: act }">
+          <button v-bind="act" class="btn" title="Bật/tắt cột tuỳ chọn">⚙ Cột</button>
+        </template>
+        <v-list density="compact" min-width="320">
+          <v-list-subheader>Cột KH Cha — aggregate</v-list-subheader>
+          <v-list-item v-for="c in OPTIONAL_COLUMNS" :key="c.key" @click="toggleColumn(c.key)">
+            <template #prepend>
+              <v-icon size="18" :color="visibleCols[c.key] ? 'primary' : ''">
+                {{ visibleCols[c.key] ? 'mdi-checkbox-marked' : 'mdi-checkbox-blank-outline' }}
+              </v-icon>
+            </template>
+            <v-list-item-title>{{ c.label }}</v-list-item-title>
+            <v-list-item-subtitle v-if="c.hint" class="text-caption">{{ c.hint }}</v-list-item-subtitle>
+          </v-list-item>
+          <v-divider class="my-1" />
+          <v-list-subheader>Cột KH Con — per-Friend (mở ▸ để xem)</v-list-subheader>
+          <v-list-item v-for="c in CHILD_OPTIONAL_COLUMNS" :key="c.key" @click="toggleChildColumn(c.key)">
+            <template #prepend>
+              <v-icon size="18" :color="visibleChildCols[c.key] ? 'primary' : ''">
+                {{ visibleChildCols[c.key] ? 'mdi-checkbox-marked' : 'mdi-checkbox-blank-outline' }}
+              </v-icon>
+            </template>
+            <v-list-item-title>{{ c.label }}</v-list-item-title>
+            <v-list-item-subtitle v-if="c.hint" class="text-caption">{{ c.hint }}</v-list-item-subtitle>
+          </v-list-item>
+        </v-list>
+      </v-menu>
       <button class="btn btn-primary" @click="openCreate">+ Thêm KH</button>
+    </div>
+
+    <!-- ════════ Toolbar Row 2: date range + advanced filter toggle ════════ -->
+    <div class="toolbar toolbar-secondary">
+      <span class="row2-label">📅 Tương tác:</span>
+      <input type="date" v-model="filters.dateFrom" class="date-input" @change="fetchContacts" />
+      <span class="date-separator">→</span>
+      <input type="date" v-model="filters.dateTo" class="date-input" @change="fetchContacts" />
+      <button class="btn-advanced" :class="{ on: showAdvanced }" @click="showAdvanced = !showAdvanced">
+        {{ showAdvanced ? '▾' : '▸' }} Lọc nâng cao
+        <span v-if="advancedActiveCount > 0" class="btn-badge">{{ advancedActiveCount }}</span>
+      </button>
+      <span class="spacer"></span>
+      <button v-if="hasAnyFilter" class="btn-clear" @click="clearAllFilters" title="Xoá tất cả bộ lọc">
+        × Xoá lọc
+      </button>
+    </div>
+
+    <!-- Advanced filter panel (collapsible) -->
+    <div v-if="showAdvanced" class="advanced-panel">
+      <div class="adv-group">
+        <label>Trạng thái Zalo</label>
+        <select v-model="filters.hasZalo" @change="fetchContacts">
+          <option value="">Tất cả</option>
+          <option value="true">✓ Có Zalo</option>
+          <option value="false">✗ Không có Zalo</option>
+          <option value="unknown">? Chưa tra</option>
+        </select>
+      </div>
+      <div class="adv-group">
+        <label>Trạng thái KB Zalo (per-nick)</label>
+        <select v-model="filters.relationshipKindAny" @change="fetchContacts">
+          <option value="">Tất cả</option>
+          <option value="friend">✓ Đã KB</option>
+          <option value="pending_friend">… Đang mời</option>
+          <option value="chatting_stranger">💬 Chat lạ</option>
+          <option value="ghost">🚫 Ngắt</option>
+        </select>
+      </div>
+      <div class="adv-group">
+        <label>Đa nick chăm</label>
+        <select v-model="filters.multiNick" @change="fetchContacts">
+          <option value="">Tất cả</option>
+          <option value="true">≥ 2 nick chăm</option>
+        </select>
+      </div>
+      <div class="adv-group">
+        <label>Lead score</label>
+        <input type="number" v-model.number="filters.scoreMin" min="0" max="100" placeholder="Min" class="score-input-mini" @change="fetchContacts" />
+        <span class="dash">—</span>
+        <input type="number" v-model.number="filters.scoreMax" min="0" max="100" placeholder="Max" class="score-input-mini" @change="fetchContacts" />
+      </div>
     </div>
 
     <!-- ════════ Stats row ════════ -->
     <div class="stats-row">
-      <div class="stat-box">📋 Tổng KH: <span class="stat-num">{{ total }}</span></div>
+      <div class="stat-box">📋 Tổng KH: <span class="stat-num">{{ stats.total ?? total }}</span></div>
       <div class="stat-box">🟢 Có nick chăm: <span class="stat-num">{{ stats.withNick }}</span></div>
-      <div class="stat-box">⚠ Multi-claim ≥3: <span class="stat-num">{{ stats.multiClaim }}</span></div>
+      <div class="stat-box">🔥 Tương tác 7d: <span class="stat-num">{{ stats.activeRecently ?? 0 }}</span></div>
+      <div class="stat-box">🆕 Mới hôm nay: <span class="stat-num">{{ stats.newToday ?? 0 }}</span></div>
+      <div class="stat-box">📅 Lịch hẹn ≤7d: <span class="stat-num">{{ stats.upcomingApt ?? 0 }}</span></div>
+      <div class="stat-box">⭐ Score ≥50: <span class="stat-num">{{ stats.highScore ?? 0 }}</span></div>
+      <div class="stat-box">⚠ Đa nick (≥3): <span class="stat-num">{{ stats.multiClaim }}</span></div>
       <div class="stat-box">🚫 Revoked: <span class="stat-num">{{ stats.revoked }}</span></div>
       <div class="stat-box">📵 No Zalo: <span class="stat-num">{{ stats.noZalo }}</span></div>
     </div>
@@ -64,28 +159,36 @@
           <tr>
             <th class="w-32"></th>
             <th class="w-40"></th>
-            <th>Tên CRM / Zalo (KH)</th>
-            <th>SĐT</th>
-            <th>Giới tính</th>
-            <th>Tỉnh/Quận</th>
-            <th>Nguồn</th>
-            <th>Trạng thái KH</th>
-            <th class="w-78">Score</th>
-            <th class="w-220">Nick chăm</th>
-            <th>Sale chính</th>
-            <th>KH nhắn cuối</th>
-            <th>Sale nhắn cuối</th>
-            <th>Tin (in/out)</th>
-            <th>Tags CRM</th>
-            <th>Có Zalo?</th>
-            <th class="w-180">Action</th>
+            <th class="w-200">Tên CRM / Zalo (KH)</th>
+            <th class="w-110">SĐT</th>
+            <th class="w-70">Giới tính</th>
+            <th class="w-100">Tỉnh/Quận</th>
+            <th class="w-80">Nguồn</th>
+            <th class="w-100">Trạng thái KH</th>
+            <th class="w-60">Score</th>
+            <th class="w-180">Nick chăm</th>
+            <th class="w-130">Sale chính</th>
+            <th class="w-170">KH nhắn cuối</th>
+            <th class="w-170">Sale nhắn cuối</th>
+            <th class="w-80">Tin in/out</th>
+            <th class="w-110">Tags CRM</th>
+            <th class="w-70">Có Zalo?</th>
+            <th v-if="visibleCols.zaloUid" class="w-120" title="Zalo UID per-account chính (cũ nhất)">Zalo UID</th>
+            <th v-if="visibleCols.zaloGlobalId" class="w-130" title="Zalo globalId toàn cục (dedup cross-account)">Global ID</th>
+            <th v-if="visibleCols.zaloUsername" class="w-130" title="Zalo username (handle t_xxx)">Username</th>
+            <th v-if="visibleCols.lookupState" class="w-100" title="Trạng thái tra Zalo qua SĐT">Lookup</th>
+            <th class="w-130">Action</th>
           </tr>
         </thead>
         <tbody>
           <template v-for="contact in contacts" :key="contact.id">
-            <tr class="master-row" :class="{ open: expandedId === contact.id }">
+            <tr
+              class="master-row"
+              :class="{ open: expandedId === contact.id }"
+              @click="onRowClick($event, contact.id)"
+            >
               <td>
-                <button class="expand-btn" @click="toggleExpand(contact.id)">
+                <button class="expand-btn" @click.stop="toggleExpand(contact.id)">
                   {{ expandedId === contact.id ? '▾' : '▸' }}
                 </button>
               </td>
@@ -132,14 +235,21 @@
                 <span v-else class="empty">—</span>
               </td>
               <td>
-                <span v-if="contact.status" :class="['chip', statusChipClass(contact.status)]">
-                  {{ statusLabel(contact.status) }}
+                <!-- Status chip dùng displayStatus aggregate (Cha = MAX order của Con). Color từ Status table. -->
+                <span
+                  v-if="contact.displayStatus"
+                  class="chip"
+                  :style="{ background: chipBg(contact.displayStatus.color), color: chipFg(contact.displayStatus.color) }"
+                  :title="contact.childrenCount && contact.childrenCount > 0 ? `Aggregate từ ${contact.childrenCount} KH con` : ''"
+                >
+                  {{ contact.displayStatus.name }}
                 </span>
+                <span v-else-if="contact.status" :class="['chip', statusChipClass(contact.status)]">{{ statusLabel(contact.status) }}</span>
                 <span v-else class="empty">—</span>
               </td>
               <td>
-                <span :class="['chip', scoreChipClass(contact.leadScore)]">
-                  {{ contact.leadScore ?? 0 }}
+                <span :class="['chip', scoreChipClass(contact.displayLeadScore ?? contact.leadScore)]">
+                  {{ Math.round(contact.displayLeadScore ?? contact.leadScore ?? 0) }}
                 </span>
               </td>
               <td>
@@ -185,6 +295,28 @@
                 <span v-else-if="contact.hasZalo === false" class="chip chip-grey">Không</span>
                 <span v-else class="empty">?</span>
               </td>
+              <td v-if="visibleCols.zaloUid" :title="'Per-account UID khác nhau theo nick. Mở ▸ xem chi tiết per row con.'">
+                <span v-if="(contact.childrenCount ?? 0) > 1" class="chip chip-multi" title="Đa Zalo identity — mỗi nick có UID riêng">đa {{ contact.childrenCount }} con</span>
+                <code v-else-if="contact.zaloUid" class="uid-cell">{{ contact.zaloUid }}</code>
+                <span v-else class="empty">—</span>
+              </td>
+              <td v-if="visibleCols.zaloGlobalId">
+                <span v-if="(contact.distinctGlobalIdCount ?? 0) > 1" class="chip chip-multi" title="Đa Zalo identity (globalId khác nhau giữa các nick)">đa {{ contact.distinctGlobalIdCount }} identity</span>
+                <code v-else-if="contact.aggregateZaloGlobalId" class="uid-cell" :title="contact.aggregateZaloGlobalId">{{ contact.aggregateZaloGlobalId.slice(0, 12) }}…</code>
+                <span v-else class="empty">—</span>
+              </td>
+              <td v-if="visibleCols.zaloUsername">
+                <span v-if="(contact.distinctUsernameCount ?? 0) > 1" class="chip chip-multi">đa {{ contact.distinctUsernameCount }} username</span>
+                <span v-else-if="contact.aggregateZaloUsername" class="uid-cell">@{{ contact.aggregateZaloUsername }}</span>
+                <span v-else class="empty">—</span>
+              </td>
+              <td v-if="visibleCols.lookupState">
+                <div v-if="contact.zaloLookupAt" class="two-line">
+                  <span class="line1">{{ formatRecentDateTime(contact.zaloLookupAt) }}</span>
+                  <span class="line2">{{ contact.zaloLookupAttempts || 0 }} attempts</span>
+                </div>
+                <span v-else class="empty">chưa tra</span>
+              </td>
               <td>
                 <div class="action-cell">
                   <button class="row-action-btn" @click="goChat(contact)" title="Mở chat">💬</button>
@@ -196,24 +328,27 @@
 
             <!-- Child row: nick chăm (real data từ /contacts/:id/friendships) -->
             <tr v-if="expandedId === contact.id" class="child-wrap">
-              <td colspan="17">
+              <td :colspan="totalColumnsCount">
                 <div class="child-table-wrap">
-                  <div v-if="friendshipLoading[contact.id]" class="child-empty">Đang tải nick chăm…</div>
+                  <div v-if="friendshipLoading[contact.id]" class="child-empty">Đang tải…</div>
                   <table v-else-if="childRows(contact).length" class="child-table">
                     <thead>
                       <tr>
                         <th>Nick Zalo (Sale)</th>
                         <th>Tên CRM/Nick KH</th>
+                        <th>Ảnh KH</th>
                         <th>Tên Zalo + UID</th>
+                        <th v-if="visibleChildCols.zaloGlobalId" title="Zalo globalId per identity (toàn cục)">Global ID</th>
+                        <th v-if="visibleChildCols.zaloUsername" title="Zalo username (handle)">Username</th>
                         <th>Trạng thái KB</th>
                         <th>Trạng thái KH</th>
+                        <th>Score</th>
                         <th>Nhãn CRM</th>
                         <th>Label Zalo</th>
                         <th>KH nhắn cuối</th>
                         <th>Sale nhắn cuối</th>
                         <th>In/Out</th>
                         <th>Là bạn từ</th>
-                        <th>Auto</th>
                         <th>Action</th>
                       </tr>
                     </thead>
@@ -221,7 +356,7 @@
                       <tr v-for="(row, idx) in childRows(contact)" :key="row.id" :class="{ winner: idx === 0 }">
                         <td>
                           <div class="nick-cell">
-                            <Avatar :name="row.nickName" :size="26" :gradient-seed="row.id" platform="zalo" />
+                            <Avatar :src="row.nickAvatarUrl" :name="row.nickName" :size="26" :gradient-seed="row.id" platform="zalo" />
                             <div class="two-line">
                               <span class="line1">
                                 {{ row.nickName }}
@@ -237,18 +372,58 @@
                           </span>
                         </td>
                         <td>
+                          <Avatar :src="row.zaloAvatarUrl || contact.avatarUrl" :name="row.zaloName || contact.fullName || '?'" :size="32" :gradient-seed="row.id" />
+                        </td>
+                        <td>
                           <div class="two-line">
                             <span class="line1">{{ row.zaloName || '—' }}</span>
                             <span class="uid">{{ row.zaloUid || 'chưa lấy' }}</span>
                           </div>
                         </td>
-                        <td>
-                          <span :class="['chip', kindChipClass(row.relationshipKind)]">
-                            {{ kindLabel(row.relationshipKind) }}
-                          </span>
+                        <td v-if="visibleChildCols.zaloGlobalId">
+                          <code v-if="row.zaloGlobalId" class="uid-cell" :title="row.zaloGlobalId">{{ row.zaloGlobalId.slice(0, 10) }}…</code>
+                          <span v-else class="empty">—</span>
+                        </td>
+                        <td v-if="visibleChildCols.zaloUsername">
+                          <span v-if="row.zaloUsername" class="uid-cell">@{{ row.zaloUsername }}</span>
+                          <span v-else class="empty">—</span>
                         </td>
                         <td>
-                          <CareStatusBadge :model-value="row.careStatus" />
+                          <div class="kb-cell">
+                            <span :class="['chip', kindChipClass(row.relationshipKind)]">
+                              {{ kindLabel(row.relationshipKind) }}
+                            </span>
+                            <span
+                              v-if="row.hasConversation"
+                              class="chip-conv chip-conv--on"
+                              title="Đã từng nhắn 1-1 với KH qua nick này"
+                            >💬 đang chat</span>
+                            <span
+                              v-else
+                              class="chip-conv chip-conv--off"
+                              title="Chỉ kết bạn Zalo, chưa có hội thoại 1-1 nào"
+                            >ø chỉ KB</span>
+                          </div>
+                        </td>
+                        <td>
+                          <span
+                            v-if="row.statusRef"
+                            class="chip status-edit-chip"
+                            :style="{ background: chipBg(row.statusRef.color), color: chipFg(row.statusRef.color) }"
+                            :title="'Click đổi status'"
+                            @click="openFriendStatusEdit(row)"
+                          >{{ row.statusRef.name }}</span>
+                          <span v-else class="empty" @click="openFriendStatusEdit(row)" style="cursor:pointer">— đặt —</span>
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            class="score-input"
+                            :value="row.leadScore"
+                            min="0" max="100"
+                            @change="onFriendScoreChange(row, ($event.target as HTMLInputElement).value)"
+                            :title="'Score per-nick này. Cha = AVG.'"
+                          />
                         </td>
                         <td>
                           <div class="tag-cell">
@@ -273,20 +448,17 @@
                         <td><strong>{{ row.totalInbound }}</strong> / {{ row.totalOutbound }}</td>
                         <td>{{ row.becameFriendAt || '—' }}</td>
                         <td>
-                          <span v-if="row.autoLabel" class="chip chip-info">{{ row.autoLabel }}</span>
-                          <span v-else class="empty">—</span>
-                        </td>
-                        <td>
                           <div class="action-cell">
-                            <button class="row-action-btn" @click="onChildAction('chat', row)">💬</button>
-                            <button class="row-action-btn" @click="onChildAction('auto', row)">⚡</button>
+                            <button class="row-action-btn" @click="onChildAction('chat', row)" title="Mở chat">💬</button>
+                            <button class="row-action-btn" @click="onChildAction('auto', row)" title="Automation">⚡</button>
+                            <button class="row-action-btn" @click="onPromoteFriend(row)" title="Tách Con này thành KH Cha riêng">✂</button>
                           </div>
                         </td>
                       </tr>
                     </tbody>
                   </table>
                   <div v-else class="child-empty">
-                    KH này chưa có nick nào chăm.
+                    KH này chưa có nick CRM nào chăm.
                   </div>
                 </div>
               </td>
@@ -294,7 +466,7 @@
           </template>
 
           <tr v-if="!loading && !contacts.length">
-            <td colspan="17" class="empty-state">Không tìm thấy KH nào khớp bộ lọc.</td>
+            <td :colspan="totalColumnsCount" class="empty-state">Không tìm thấy KH nào khớp bộ lọc.</td>
           </tr>
         </tbody>
       </table>
@@ -309,6 +481,28 @@
 
     <!-- Dialogs (giữ nguyên) -->
     <ContactDetailDialog v-model="showDialog" :contact="selectedContact" @saved="onSaved" @deleted="onDeleted" />
+    <ParentCandidateDialog v-model="showCandidateDialog" @resolved="onCandidateResolved" />
+
+    <!-- Friend status picker dialog (per-pair status) -->
+    <div v-if="statusEditTarget" class="status-picker-overlay" @click.self="statusEditTarget = null">
+      <div class="status-picker">
+        <h4>Chọn trạng thái cho nick này</h4>
+        <div class="status-picker-list">
+          <button
+            v-for="s in allStatuses"
+            :key="s.id"
+            class="status-picker-item"
+            :class="{ active: statusEditTarget?.statusRef?.id === s.id }"
+            :style="{ background: chipBg(s.color), color: chipFg(s.color) }"
+            @click="applyFriendStatus(s.id)"
+          >
+            {{ s.name }}
+            <span class="order-num">#{{ s.order }}</span>
+          </button>
+        </div>
+        <button class="btn-close" @click="statusEditTarget = null">Đóng</button>
+      </div>
+    </div>
     <DuplicateReviewDialog v-model="showDuplicateDialog" @merged="onDuplicateMerged" />
   </div>
 </template>
@@ -317,8 +511,8 @@
 import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import ContactDetailDialog from '@/components/contacts/ContactDetailDialog.vue';
+import ParentCandidateDialog from '@/components/contacts/ParentCandidateDialog.vue';
 import DuplicateReviewDialog from '@/components/contacts/DuplicateReviewDialog.vue';
-import CareStatusBadge from '@/components/ui/CareStatusBadge.vue';
 import type { CareStatusValue } from '@/constants/care-status';
 import Avatar from '@/components/ui/Avatar.vue';
 import { useToast } from '@/composables/use-toast';
@@ -339,15 +533,155 @@ const { contacts, total, loading, filters, pagination, fetchContacts } = useCont
 const { duplicateTotal, fetchDuplicateGroups } = useContactIntelligence();
 const toast = useToast();
 
+// ── Column toggle ───────────────────────────────────────────────────────────
+// 2 LEVEL:
+//  - Master (KH Cha): cột aggregate — chỉ có nghĩa khi tất cả Friend đồng nhất.
+//    Show "đa N identity" khi distinctGlobalIdCount > 1.
+//  - Child (KH Con / Friend row): cột per-identity — mỗi row 1 giá trị riêng.
+// Persist localStorage. Default ẨN.
+const OPTIONAL_COLUMNS = [
+  { key: 'zaloUid',      label: 'Zalo UID (Cha)',  hint: 'KH Cha: per-account UID chính. Đa nick → mở ▸ xem row con.' },
+  { key: 'zaloGlobalId', label: 'Global ID (Cha)', hint: 'KH Cha: globalId chung khi tất cả con trùng, hoặc "đa N".' },
+  { key: 'zaloUsername', label: 'Username (Cha)',  hint: 'KH Cha: username chung khi trùng tất cả con.' },
+  { key: 'lookupState',  label: 'Lookup',          hint: 'Trạng thái tra Zalo qua SĐT cho KH này.' },
+] as const;
+type OptColKey = (typeof OPTIONAL_COLUMNS)[number]['key'];
+const LS_KEY_COLS = 'contactsview.visibleCols.v2';
+function loadVisibleCols(): Record<OptColKey, boolean> {
+  const def = { zaloUid: false, zaloGlobalId: false, zaloUsername: false, lookupState: false };
+  try {
+    const raw = localStorage.getItem(LS_KEY_COLS);
+    if (raw) return { ...def, ...JSON.parse(raw) };
+  } catch { /* ignore */ }
+  return def;
+}
+const visibleCols = ref<Record<OptColKey, boolean>>(loadVisibleCols());
+function toggleColumn(key: OptColKey) {
+  visibleCols.value[key] = !visibleCols.value[key];
+  try { localStorage.setItem(LS_KEY_COLS, JSON.stringify(visibleCols.value)); } catch { /* ignore */ }
+}
+const totalColumnsCount = computed(() =>
+  17 + Object.values(visibleCols.value).filter(Boolean).length,
+);
+
+// Child (KH Con) optional cols — riêng vì bản chất per-Friend chứ không aggregate.
+const CHILD_OPTIONAL_COLUMNS = [
+  { key: 'zaloGlobalId', label: 'Global ID (Con)', hint: 'Per-identity — toàn cục, cùng giữa các nick nhìn cùng identity' },
+  { key: 'zaloUsername', label: 'Username (Con)',  hint: 'Per-identity username handle' },
+] as const;
+type ChildColKey = (typeof CHILD_OPTIONAL_COLUMNS)[number]['key'];
+const LS_KEY_CHILD_COLS = 'contactsview.visibleChildCols.v1';
+function loadVisibleChildCols(): Record<ChildColKey, boolean> {
+  const def = { zaloGlobalId: false, zaloUsername: false };
+  try {
+    const raw = localStorage.getItem(LS_KEY_CHILD_COLS);
+    if (raw) return { ...def, ...JSON.parse(raw) };
+  } catch { /* ignore */ }
+  return def;
+}
+const visibleChildCols = ref<Record<ChildColKey, boolean>>(loadVisibleChildCols());
+function toggleChildColumn(key: ChildColKey) {
+  visibleChildCols.value[key] = !visibleChildCols.value[key];
+  try { localStorage.setItem(LS_KEY_CHILD_COLS, JSON.stringify(visibleChildCols.value)); } catch { /* ignore */ }
+}
+
 const showDialog = ref(false);
 const showDuplicateDialog = ref(false);
+const showCandidateDialog = ref(false);
+const candidateCount = ref(0);
+async function fetchCandidateCount() {
+  try {
+    const res = await api.get<{ candidates: unknown[] }>('/contacts/parent-candidates');
+    candidateCount.value = (res.data.candidates || []).length;
+  } catch { candidateCount.value = 0; }
+}
+function onCandidateResolved() { fetchCandidateCount(); fetchContacts(); }
 const selectedContact = ref<Contact | null>(null);
 const expandedId = ref<string | null>(null);
 // Real friendship data per contact (key: contactId → ChildRow[]). Fetched on first expand.
 const friendshipCache = ref<Record<string, ChildRow[]>>({});
 const friendshipLoading = ref<Record<string, boolean>>({});
-const dateFrom = ref('');
-const dateTo = ref('');
+
+// Advanced filter panel toggle (Lọc nâng cao: hasZalo / relationshipKind / multiNick / score)
+const showAdvanced = ref(false);
+const advancedActiveCount = computed(() => {
+  let n = 0;
+  if (filters.hasZalo) n++;
+  if (filters.relationshipKindAny) n++;
+  if (filters.multiNick) n++;
+  if (filters.scoreMin != null || filters.scoreMax != null) n++;
+  return n;
+});
+const hasAnyFilter = computed(() =>
+  !!(filters.search || filters.source || filters.statusId || filters.assignedUserId
+     || filters.threadType || filters.hasZalo || filters.multiNick
+     || filters.relationshipKindAny || filters.scoreMin != null || filters.scoreMax != null
+     || filters.dateFrom || filters.dateTo),
+);
+function clearAllFilters() {
+  filters.search = '';
+  filters.source = '';
+  filters.statusId = '';
+  filters.assignedUserId = '';
+  filters.threadType = '';
+  filters.hasZalo = '';
+  filters.multiNick = '';
+  filters.relationshipKindAny = '';
+  filters.scoreMin = null;
+  filters.scoreMax = null;
+  filters.dateFrom = '';
+  filters.dateTo = '';
+  pagination.page = 1;
+  fetchContacts();
+}
+
+// Dynamic Status list cho dropdown "Trạng thái KH" (cấp Contact = statusId)
+interface MasterStatus { id: string; name: string; color: string | null; order: number }
+const allMasterStatuses = ref<MasterStatus[]>([]);
+async function loadMasterStatuses() {
+  if (allMasterStatuses.value.length > 0) return;
+  try {
+    const res = await api.get<{ statuses: MasterStatus[] }>('/settings/statuses');
+    allMasterStatuses.value = res.data.statuses || [];
+  } catch { /* non-critical */ }
+}
+
+// Sale users (cho dropdown "Sale chăm" = Contact.assignedUserId)
+interface UserLite { id: string; fullName: string }
+const allUsers = ref<UserLite[]>([]);
+async function loadUsers() {
+  if (allUsers.value.length > 0) return;
+  try {
+    const res = await api.get<{ users?: UserLite[] }>('/users');
+    allUsers.value = res.data?.users || [];
+  } catch {
+    // Fallback: extract distinct assignedUser từ contacts đã load
+    const seen = new Map<string, UserLite>();
+    for (const c of contacts.value) {
+      if (c.assignedUser?.id && !seen.has(c.assignedUser.id)) {
+        seen.set(c.assignedUser.id, { id: c.assignedUser.id, fullName: c.assignedUser.fullName || '—' });
+      }
+    }
+    allUsers.value = [...seen.values()];
+  }
+}
+
+// Stats from /contacts/stats endpoint (F5 reload). Fallback computed từ contacts nếu fail.
+interface ContactStats {
+  total?: number; withNick?: number; multiClaim?: number; revoked?: number;
+  noZalo?: number; newToday?: number; activeRecently?: number;
+  upcomingApt?: number; highScore?: number;
+}
+const stats = ref<ContactStats>({});
+async function loadStats() {
+  try {
+    const res = await api.get<ContactStats>('/contacts/stats');
+    stats.value = res.data || {};
+  } catch (err) {
+    console.error('[ContactsView] stats fetch failed:', err);
+    stats.value = {};
+  }
+}
 
 let searchTimeout: ReturnType<typeof setTimeout>;
 function debouncedFetch() {
@@ -372,13 +706,22 @@ function toggleExpand(id: string) {
   }
 }
 
+// Click anywhere trên row Cha = toggle expand. Skip nếu click vào button / input /
+// link bên trong (để giữ behavior gốc của những control đó: edit name, click chat...).
+function onRowClick(e: MouseEvent, id: string) {
+  const t = e.target as HTMLElement;
+  if (t.closest('button, input, select, textarea, a, .v-menu, .action-cell')) return;
+  toggleExpand(id);
+}
+
 async function fetchFriendships(contact: Contact) {
   friendshipLoading.value[contact.id] = true;
   try {
-    const res = await api.get<{ friendships: ApiFriendship[] }>(`/contacts/${contact.id}/friendships`);
-    friendshipCache.value[contact.id] = (res.data.friendships || []).map(f => mapFriendshipToChildRow(f, contact));
+    // GET /contacts/:id trả friends include statusRef per-pair (model B).
+    const res = await api.get<Contact & { friends?: ApiFriendship[] }>(`/contacts/${contact.id}`);
+    friendshipCache.value[contact.id] = (res.data.friends || []).map(f => mapFriendshipToChildRow(f, contact));
   } catch (err) {
-    console.error('[friendships] fetch error:', err);
+    console.error('[contact-detail] fetch error:', err);
     friendshipCache.value[contact.id] = [];
   } finally {
     friendshipLoading.value[contact.id] = false;
@@ -393,11 +736,18 @@ interface ApiFriendship {
   hasConversation: boolean;
   aliasInNick: string | null;
   zaloLabels: unknown;
+  zaloDisplayName: string | null;
+  zaloAvatarUrl: string | null;
+  zaloGlobalId: string | null;
+  zaloUsername: string | null;
   becameFriendAt: string | null;
   lastInboundAt: string | null;
   lastOutboundAt: string | null;
   totalInbound: number;
   totalOutbound: number;
+  leadScore: number;
+  statusId: string | null;
+  statusRef: StatusLite | null;
   zaloAccount: {
     id: string;
     displayName: string | null;
@@ -433,13 +783,21 @@ function mapFriendshipToChildRow(f: ApiFriendship, contact: Contact): ChildRow {
   return {
     id: f.id,
     nickName: f.zaloAccount.displayName || 'Nick',
+    nickAvatarUrl: f.zaloAccount.avatarUrl ?? null,
     salePhone: f.zaloAccount.phone || '',
     saleName: f.zaloAccount.owner?.fullName || '—',
     aliasInNick: f.aliasInNick,
-    zaloName: contact.fullName,
+    // Tên Zalo per-identity (snapshot tại Friend), fallback Contact.fullName chỉ khi NULL
+    zaloName: f.zaloDisplayName || contact.fullName,
     zaloUid: f.zaloUidInNick,
+    zaloGlobalId: f.zaloGlobalId,
+    zaloUsername: f.zaloUsername,
     relationshipKind: kind,
+    hasConversation: f.hasConversation,
     careStatus: (contact.status as CareStatusValue) || 'interested',
+    statusRef: f.statusRef,
+    leadScore: f.leadScore ?? 0,
+    zaloAvatarUrl: f.zaloAvatarUrl,
     crmTagsPerNick: contact.tags?.slice(0, 3) || [],
     zaloLabels: labels,
     lastInboundAt: f.lastInboundAt,
@@ -449,6 +807,68 @@ function mapFriendshipToChildRow(f: ApiFriendship, contact: Contact): ChildRow {
     becameFriendAt: relativeTime(f.becameFriendAt),
     autoLabel: null,
   };
+}
+
+async function onPromoteFriend(row: ChildRow) {
+  const name = prompt(`Tên cho KH Cha mới (gỡ "${row.nickName}" × UID ${row.zaloUid}):`, '');
+  if (name === null) return;
+  try {
+    const res = await api.post<{ newContact: { id: string; fullName: string }; movedConversations: number }>(
+      `/friends/${row.id}/promote-to-parent`,
+      { fullName: name.trim() || undefined },
+    );
+    toast.success(`Đã tạo KH Cha "${res.data.newContact.fullName}". ${res.data.movedConversations} conversation chuyển.`);
+    Object.keys(friendshipCache.value).forEach(k => delete friendshipCache.value[k]);
+    fetchContacts();
+  } catch (err) {
+    const msg = (err as { response?: { data?: { error?: string } } }).response?.data?.error || 'Tách thất bại';
+    toast.error(msg);
+  }
+}
+
+// ── Friend per-pair: edit status + score ─────────────────────────────────
+async function onFriendScoreChange(row: ChildRow, value: string) {
+  const score = Math.max(0, Math.min(100, parseInt(value) || 0));
+  try {
+    await api.patch(`/friends/${row.id}`, { leadScore: score });
+    row.leadScore = score;
+    // Invalidate cache để refetch aggregate Cha
+    Object.keys(friendshipCache.value).forEach(k => delete friendshipCache.value[k]);
+    fetchContacts();
+  } catch (err) {
+    toast.error('Cập nhật score thất bại');
+  }
+}
+
+const statusEditTarget = ref<ChildRow | null>(null);
+const allStatuses = ref<StatusLite[]>([]);
+
+async function fetchAllStatuses() {
+  if (allStatuses.value.length > 0) return;
+  try {
+    const res = await api.get<{ statuses: StatusLite[] }>('/settings/statuses');
+    allStatuses.value = res.data.statuses || [];
+  } catch {}
+}
+
+function openFriendStatusEdit(row: ChildRow) {
+  fetchAllStatuses();
+  statusEditTarget.value = row;
+}
+
+async function applyFriendStatus(statusId: string) {
+  if (!statusEditTarget.value) return;
+  const row = statusEditTarget.value;
+  try {
+    await api.patch(`/friends/${row.id}`, { statusId });
+    const newStatus = allStatuses.value.find(s => s.id === statusId);
+    if (newStatus) row.statusRef = newStatus;
+    statusEditTarget.value = null;
+    Object.keys(friendshipCache.value).forEach(k => delete friendshipCache.value[k]);
+    fetchContacts();
+  } catch (err) {
+    toast.error('Cập nhật status thất bại');
+  }
 }
 
 function genderLabel(value: string) {
@@ -475,6 +895,18 @@ function scoreChipClass(score: number): string {
   if (score >= 40) return 'chip-warning';
   return 'chip-error';
 }
+// Status color helpers — hex từ Status.color → background nhạt + foreground đậm cho readable chip.
+function chipBg(hex: string | null | undefined): string {
+  if (!hex) return 'rgba(90,100,120,0.10)';
+  // hex → rgba 0.15 alpha
+  const m = hex.match(/^#([0-9a-f]{6})$/i);
+  if (!m) return 'rgba(90,100,120,0.10)';
+  const n = parseInt(m[1], 16);
+  return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},0.15)`;
+}
+function chipFg(hex: string | null | undefined): string {
+  return hex || 'var(--smax-grey-700)';
+}
 function ageOf(c: Contact): number | null {
   const cy = new Date().getFullYear();
   if (c.birthDate) {
@@ -485,12 +917,8 @@ function ageOf(c: Contact): number | null {
   return null;
 }
 
-const stats = computed(() => ({
-  withNick: contacts.value.filter(c => c.hasZalo === true).length,
-  multiClaim: contacts.value.filter(c => (c._count?.conversations || 0) >= 3).length,
-  revoked: contacts.value.filter(c => c.consentStatus === 'revoked').length,
-  noZalo: contacts.value.filter(c => c.hasZalo === false).length,
-}));
+// (Stats giờ load từ /contacts/stats endpoint — xem `const stats` ở phần advanced filter
+// state. Computed fallback cũ đã thay bằng ref reactive update qua loadStats.)
 
 function openCreate() {
   selectedContact.value = null;
@@ -506,15 +934,23 @@ function goChat(c: Contact) {
 function onAutomation(_c: Contact) { toast.warning('Automation dialog: chưa implement'); }
 
 // ════════ Child rows (MOCK — chờ /contacts/:id/friendships) ════════
+interface StatusLite { id: string; name: string; order: number; color: string | null }
 interface ChildRow {
   id: string;
   nickName: string;
+  nickAvatarUrl: string | null;
+  statusRef: StatusLite | null;
+  leadScore: number;
+  zaloAvatarUrl: string | null;
   salePhone: string;
   saleName: string;
   aliasInNick: string | null;
   zaloName: string | null;
   zaloUid: string | null;
+  zaloGlobalId: string | null;
+  zaloUsername: string | null;
   relationshipKind: 'friend' | 'pending_friend' | 'chatting_stranger' | 'ghost';
+  hasConversation: boolean;
   careStatus: CareStatusValue;
   crmTagsPerNick: string[];
   zaloLabels: string[];
@@ -526,9 +962,16 @@ interface ChildRow {
   autoLabel: string | null;
 }
 
-/** Child rows từ cache thật (load qua /contacts/:id/friendships khi expand) */
+/** Child rows: sort "đang chat" lên đầu, "chỉ KB" (chưa nhắn 1-1) xuống dưới.
+ *  Tránh nhầm: KB Zalo ≠ đã chăm sóc — sale cần thấy ngay nick nào đã có dialog. */
 function childRows(contact: Contact): ChildRow[] {
-  return friendshipCache.value[contact.id] || [];
+  const rows = friendshipCache.value[contact.id] || [];
+  return [...rows].sort((a, b) => {
+    if (a.hasConversation !== b.hasConversation) return a.hasConversation ? -1 : 1;
+    const at = a.lastInboundAt || a.lastOutboundAt || '';
+    const bt = b.lastInboundAt || b.lastOutboundAt || '';
+    return bt.localeCompare(at);
+  });
 }
 
 
@@ -581,14 +1024,32 @@ function onDuplicateMerged() {
 onMounted(() => {
   fetchContacts();
   fetchDuplicateGroups();
+  fetchCandidateCount();
+  loadStats();
+  loadMasterStatuses();
+  loadUsers();
 });
 </script>
 
 <style scoped>
 .smax-contacts-page {
-  padding: 13px 18px 26px;
+  padding: 13px 18px 13px;
   background: var(--smax-grey-100);
-  min-height: 100%;
+  /* Flex column: page-header + toolbar + stats + scroll-wrap (flex: 1).
+     Height fixed = viewport - topnav → scroll-wrap takes remaining vertical
+     space + own scroll (V + H) → toolbar/stats stay above khi scroll bảng. */
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - var(--smax-topnav-h, 52px));
+  overflow: hidden;
+}
+.smax-contacts-page > .page-header,
+.smax-contacts-page > .toolbar,
+.smax-contacts-page > .toolbar-secondary,
+.smax-contacts-page > .advanced-panel,
+.smax-contacts-page > .stats-row,
+.smax-contacts-page > .pagination {
+  flex-shrink: 0;
 }
 
 /* ════════ Page header ════════ */
@@ -643,6 +1104,95 @@ onMounted(() => {
 .toolbar .date-input { max-width: 140px; }
 .date-separator { color: var(--smax-grey-700); font-size: 12px; }
 .spacer { flex: 1 0 auto; }
+
+/* Toolbar Row 2: date + advanced toggle — compact, secondary visual weight */
+.toolbar-secondary {
+  padding: 6px 11px;
+  margin-top: -6px;  /* dính vào row 1 */
+  margin-bottom: 9px;
+  background: var(--smax-grey-50);
+  font-size: 12px;
+}
+.row2-label {
+  color: var(--smax-grey-700);
+  font-weight: 600;
+  font-size: 11.5px;
+}
+.btn-advanced {
+  padding: 5px 10px;
+  border: 1px dashed var(--smax-primary);
+  background: transparent;
+  color: var(--smax-primary);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.btn-advanced.on { background: var(--smax-primary-soft); border-style: solid; }
+.btn-advanced:hover { background: var(--smax-primary-soft); }
+.btn-clear {
+  padding: 4px 10px;
+  border: 1px solid var(--smax-grey-300);
+  background: transparent;
+  color: var(--smax-grey-700);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+.btn-clear:hover { color: var(--smax-error); border-color: var(--smax-error); }
+
+/* Advanced panel: collapse mở dưới row 2, grid 4 cột group filter */
+.advanced-panel {
+  background: var(--smax-bg);
+  border: 1px solid var(--smax-grey-200);
+  border-radius: 7px;
+  padding: 11px 13px;
+  margin-bottom: 9px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 11px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+.adv-group {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+}
+.adv-group label {
+  display: block; width: 100%;
+  font-size: 11px; font-weight: 600;
+  color: var(--smax-grey-700);
+  text-transform: uppercase; letter-spacing: 0.3px;
+  margin-bottom: 4px;
+}
+.adv-group select,
+.score-input-mini {
+  padding: 6px 9px;
+  border: 1px solid var(--smax-grey-300);
+  border-radius: 6px;
+  background: var(--smax-bg);
+  font-size: 12.5px;
+  font-family: inherit;
+  flex: 1; min-width: 0;
+}
+.score-input-mini { max-width: 80px; text-align: center; }
+.adv-group .dash { color: var(--smax-grey-700); font-size: 13px; }
+.toggle-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--smax-grey-700); cursor: pointer; padding: 6px 10px; border-radius: 6px; }
+.toggle-inline:hover { background: rgba(0,0,0,0.04); }
+.toggle-inline input { cursor: pointer; }
+.status-edit-chip { cursor: pointer; }
+.status-edit-chip:hover { filter: brightness(1.1); }
+.score-input { width: 50px; padding: 2px 4px; font-size: 11.5px; text-align: center; border: 1px solid var(--smax-grey-300); border-radius: 4px; }
+.score-input:focus { outline: 2px solid var(--smax-primary, #00f2ff); }
+.status-picker-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 1100; display: flex; align-items: center; justify-content: center; }
+.status-picker { background: var(--smax-bg); border-radius: 10px; padding: 16px 20px; min-width: 320px; max-width: 480px; }
+.status-picker h4 { margin: 0 0 12px; font-size: 14px; }
+.status-picker-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.status-picker-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border: 1px solid transparent; border-radius: 6px; cursor: pointer; font-weight: 500; text-align: left; }
+.status-picker-item.active { border-color: var(--smax-primary, #00f2ff); }
+.status-picker-item:hover { filter: brightness(1.05); }
+.order-num { font-size: 10px; opacity: 0.5; font-family: monospace; }
+.btn-close { width: 100%; padding: 8px; background: var(--smax-grey-100); border: 1px solid var(--smax-grey-200); border-radius: 6px; cursor: pointer; }
 .btn {
   padding: 7px 13px;
   border: 1px solid var(--smax-primary);
@@ -686,20 +1236,41 @@ onMounted(() => {
   margin-left: 3px;
 }
 
-/* ════════ Table ════════ */
+/* ════════ Table — responsive contained scroll ════════
+   PATTERN: scroll-wrap takes remaining viewport height + own scroll both axes.
+   Sticky thead binds to scroll-wrap, pins at top (top: 0). Page tự nó KHÔNG
+   scroll — toolbar/stats stay above scroll-wrap, table cuộn trong wrap.
+
+   Lợi ích responsive:
+   - HD 1366: table > viewport → H scroll trong wrap (toolbar/stats không bị scroll)
+   - FHD 1920+: table fit, không H scroll. Sticky thead pin top wrap.
+   - 2K 2560+: table fit thừa space.
+   Sticky vertical bind nên work ổn ở mọi viewport. */
 .scroll-wrap {
   background: var(--smax-bg);
   border-radius: 7px;
-  overflow-x: auto;
+  overflow: auto; /* both axes scroll inside wrap */
+  flex: 1; min-height: 0; /* fill remaining vertical space của page flex column */
   box-shadow: 0 1px 3px rgba(0,0,0,0.05);
 }
 .smax-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 12.5px;
+  /* min-width: 1500 cho HD 1366 — < viewport hẹp 1500 sẽ H scroll trong wrap.
+     Cột explicit width đủ cho content phổ biến nhưng không quá rộng. */
   min-width: 1500px;
+  /* table-layout: fixed → cột không recalc khi expand row con (no layout shift) */
+  table-layout: fixed;
 }
-.smax-table thead th {
+.smax-table > thead > tr > th {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.child-table { table-layout: auto; }
+/* Sticky thead Cha pin trong scroll-wrap (top: 0 vì wrap có own scroll, không
+   phải page scroll). CHỈ direct descendant > > > tránh leak xuống child-table. */
+.smax-table > thead > tr > th {
   background: var(--smax-grey-50);
   border-bottom: 1px solid var(--smax-grey-200);
   padding: 9px 11px;
@@ -710,13 +1281,27 @@ onMounted(() => {
   font-size: 11.5px;
   text-transform: uppercase;
   letter-spacing: 0.3px;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+/* Child table thead = static (chỉ scroll cùng row, không pin) */
+.child-table thead th {
+  position: static;
 }
 .smax-table tbody tr.master-row {
   border-bottom: 1px solid var(--smax-grey-100);
-  cursor: default;
+  cursor: pointer; /* click anywhere toggle expand */
 }
 .smax-table tbody tr.master-row:hover { background: var(--smax-grey-50); }
-.smax-table tbody tr.master-row.open { background: var(--smax-primary-soft); }
+.smax-table tbody tr.master-row.open {
+  background: var(--smax-primary-soft);
+}
+/* Border-left accent qua box-shadow inset trên CELL ĐẦU (avoid position:relative
+   trên <tr> — gây Chrome recalc table cell widths khi row open). */
+.smax-table tbody tr.master-row.open > td:first-child {
+  box-shadow: inset 3px 0 0 var(--smax-primary);
+}
 .smax-table td {
   padding: 9px 11px;
   vertical-align: top;
@@ -724,7 +1309,18 @@ onMounted(() => {
 .w-32 { width: 32px; }
 .w-40 { width: 40px; }
 .w-78 { width: 78px; }
+.w-80 { width: 80px; }
+.w-90 { width: 90px; }
+.w-100 { width: 100px; }
+.w-110 { width: 110px; }
+.w-120 { width: 120px; }
+.w-130 { width: 130px; }
+.w-140 { width: 140px; }
+.w-150 { width: 150px; }
+.w-170 { width: 170px; }
 .w-180 { width: 180px; }
+.w-200 { width: 200px; }
+.w-260 { width: 260px; }
 
 .expand-btn {
   background: transparent; border: none;
@@ -891,6 +1487,38 @@ onMounted(() => {
 }
 
 .w-220 { width: 220px; }
+
+/* KB cell: chip relationship + badge "đang chat / chỉ KB" để phân biệt
+   Friend đã từng có conv 1-1 với Friend chỉ kết bạn Zalo (sync từ getAllFriends). */
+.kb-cell { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.chip-conv {
+  font-size: 9.5px; font-weight: 700;
+  padding: 1px 5px; border-radius: 4px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.chip-conv--on  { background: rgba(0,200,83,0.12);  color: #00897b; }
+.chip-conv--off { background: rgba(0,0,0,0.06);     color: #888;    }
+
+/* Zalo identity columns (optional, toggle via ⚙ Cột) */
+.uid-cell {
+  font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+  font-size: 11px;
+  background: var(--smax-grey-100);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--smax-grey-700);
+  word-break: break-all;
+}
+.chip-multi {
+  background: rgba(13, 71, 161, 0.10);
+  color: #0d47a1;
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+}
 
 .empty-state {
   text-align: center;

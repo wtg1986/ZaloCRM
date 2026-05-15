@@ -1,22 +1,34 @@
 <template>
   <aside class="info-panel">
-    <!-- ════════ HEADER pinned (avatar + ID + care-status) ════════ -->
+    <!-- ════════ HEADER pinned (avatar + lead score overlay + care-status) ════════ -->
     <header class="ip-header">
       <button class="ip-close" title="Đóng" @click="$emit('close')">×</button>
-      <Avatar
-        :src="props.contact?.avatarUrl"
-        :name="headerFullName"
-        :size="64"
-        :gender="form.gender"
-        :gradient-seed="props.contact?.id || headerFullName"
-        class="ip-avatar-big"
-      />
+      <div class="ip-avatar-wrap">
+        <Avatar
+          :src="props.contact?.avatarUrl"
+          :name="headerFullName"
+          :size="64"
+          :gender="form.gender"
+          :gradient-seed="props.contact?.id || headerFullName"
+          class="ip-avatar-big"
+        />
+        <!-- Lead score badge overlay (Smax-style điểm KH) -->
+        <span
+          v-if="props.contact"
+          class="lead-score-badge"
+          :class="leadScoreTier"
+          :title="`Lead score: ${props.contact.leadScore ?? 0} điểm${props.contact.lastActivity ? ' · cập nhật ' + relativeTime(props.contact.lastActivity) : ''}`"
+        >
+          ⭐ {{ props.contact.leadScore ?? 0 }}
+        </span>
+      </div>
       <div class="ip-name-line" :title="headerFullName">{{ headerFullName }}</div>
       <div v-if="props.contact?.zaloUid" class="ip-id">UID: {{ props.contact.zaloUid }}</div>
       <div class="ip-care-row">
-        <button class="care-status-select" @click="onCycleCareStatus">
-          {{ careStatusLabel }} ▾
-        </button>
+        <CareStatusBadge
+          :model-value="(form.status as string | null) || 'new'"
+          @update:model-value="onChangeCareStatus"
+        />
       </div>
     </header>
 
@@ -39,11 +51,12 @@
       </button>
       <button
         class="ip-tab"
-        :class="{ active: activeTab === 'activity' }"
+        :class="{ active: activeTab === 'activity', 'badge-bump': badgeBump }"
+        data-fly-target="activity-tab"
         @click="activeTab = 'activity'"
       >
         <span class="ic">⚡</span> Hoạt động
-        <span v-if="activityBadgeCount" class="tab-badge">{{ activityBadgeCount }}</span>
+        <span v-if="activityBadgeCount || pendingAptBump" class="tab-badge">{{ (activityBadgeCount ?? 0) + pendingAptBump }}</span>
       </button>
     </nav>
 
@@ -52,41 +65,23 @@
 
       <!-- ══════ TAB 1: HỒ SƠ ══════ -->
       <div v-show="activeTab === 'profile'" class="tab-pane">
-        <!-- Inline form: 9 rows -->
-        <section class="ip-form">
+        <!-- Inline form: collapsed (Tên Zalo + SĐT) hoặc expanded (full 9 rows). Auto-collapse sau 5s. -->
+        <section class="ip-form" :class="{ collapsed: !infoExpanded }">
+          <!-- Always visible: Tên Zalo -->
           <div class="ip-form-row">
             <span class="ip-icon">👤</span>
             <span class="ip-label">Tên Zalo</span>
             <input v-model="form.fullName" placeholder="Tên Zalo cung cấp" @blur="saveContact" />
           </div>
-          <div class="ip-form-row">
-            <span class="ip-icon">✏</span>
-            <span class="ip-label">Tên Alias</span>
-            <input v-model="form.crmName" placeholder="Sale tự đặt" @blur="saveContact" />
-          </div>
-          <div class="ip-form-row">
-            <span class="ip-icon">📅</span>
-            <span class="ip-label">Ngày sinh</span>
-            <input type="date" v-model="form.birthDate" @blur="saveContact" />
-          </div>
-          <div class="ip-form-row">
-            <span class="ip-icon">⚧</span>
-            <span class="ip-label">Giới tính</span>
-            <select v-model="form.gender" @change="saveContact">
-              <option :value="null">Không rõ</option>
-              <option value="female">Nữ</option>
-              <option value="male">Nam</option>
-              <option value="other">Khác</option>
-            </select>
-          </div>
 
+          <!-- Always visible: SĐT chính -->
           <div class="ip-form-row">
             <span class="ip-icon">📞</span>
             <span class="ip-label">SĐT</span>
             <div class="phone-cell">
               <input v-model="form.phone" placeholder="SĐT chính" @blur="saveContact" />
               <button
-                v-if="form.phone"
+                v-if="form.phone && infoExpanded"
                 class="show-extra-phones"
                 :title="showExtraPhones ? 'Ẩn SĐT phụ' : 'Hiện SĐT phụ'"
                 @click="showExtraPhones = !showExtraPhones"
@@ -95,32 +90,61 @@
               </button>
             </div>
           </div>
-          <template v-if="showExtraPhones">
-            <div class="ip-form-row sub">
-              <span class="ip-label">SĐT 2</span>
-              <input v-model="form.phone2" placeholder="SĐT phụ 1" @blur="saveContact" />
+
+          <!-- Expand toggle -->
+          <button class="info-expand-toggle" @click="toggleInfoExpand">
+            <span v-if="!infoExpanded">▾ Xem đầy đủ</span>
+            <span v-else>▴ Thu gọn (tự thu sau {{ collapseRemain }}s)</span>
+          </button>
+
+          <!-- Expanded fields -->
+          <template v-if="infoExpanded">
+            <div class="ip-form-row">
+              <span class="ip-icon">✏</span>
+              <span class="ip-label">Tên Alias</span>
+              <input v-model="form.crmName" placeholder="Sale tự đặt" @blur="saveContact" />
             </div>
-            <div class="ip-form-row sub">
-              <span class="ip-label">SĐT 3</span>
-              <input v-model="form.phone3" placeholder="SĐT phụ 2" @blur="saveContact" />
+            <div class="ip-form-row">
+              <span class="ip-icon">📅</span>
+              <span class="ip-label">Ngày sinh</span>
+              <input type="date" v-model="form.birthDate" @blur="saveContact" />
+            </div>
+            <div class="ip-form-row">
+              <span class="ip-icon">⚧</span>
+              <span class="ip-label">Giới tính</span>
+              <select v-model="form.gender" @change="saveContact">
+                <option :value="null">Không rõ</option>
+                <option value="female">Nữ</option>
+                <option value="male">Nam</option>
+                <option value="other">Khác</option>
+              </select>
+            </div>
+            <template v-if="showExtraPhones">
+              <div class="ip-form-row sub">
+                <span class="ip-label">SĐT 2</span>
+                <input v-model="form.phone2" placeholder="SĐT phụ 1" @blur="saveContact" />
+              </div>
+              <div class="ip-form-row sub">
+                <span class="ip-label">SĐT 3</span>
+                <input v-model="form.phone3" placeholder="SĐT phụ 2" @blur="saveContact" />
+              </div>
+            </template>
+            <div class="ip-form-row">
+              <span class="ip-icon">✉</span>
+              <span class="ip-label">Email</span>
+              <input v-model="form.email" placeholder="Chưa có email" @blur="saveContact" />
+            </div>
+            <div class="ip-form-row">
+              <span class="ip-icon">📍</span>
+              <span class="ip-label">Địa chỉ</span>
+              <input v-model="form.addressLine" placeholder="Địa chỉ chi tiết" @blur="saveContact" />
+            </div>
+            <div class="ip-form-row">
+              <span class="ip-icon">💼</span>
+              <span class="ip-label">Nghề</span>
+              <input v-model="form.occupation" placeholder="Nghề nghiệp" @blur="saveContact" />
             </div>
           </template>
-
-          <div class="ip-form-row">
-            <span class="ip-icon">✉</span>
-            <span class="ip-label">Email</span>
-            <input v-model="form.email" placeholder="Chưa có email" @blur="saveContact" />
-          </div>
-          <div class="ip-form-row">
-            <span class="ip-icon">📍</span>
-            <span class="ip-label">Địa chỉ</span>
-            <input v-model="form.addressLine" placeholder="Địa chỉ chi tiết" @blur="saveContact" />
-          </div>
-          <div class="ip-form-row">
-            <span class="ip-icon">💼</span>
-            <span class="ip-label">Nghề</span>
-            <input v-model="form.occupation" placeholder="Nghề nghiệp" @blur="saveContact" />
-          </div>
         </section>
 
         <v-alert v-if="saveSuccess" type="success" density="compact" class="mx-3 my-2" closable
@@ -132,90 +156,94 @@
           Lưu thất bại, thử lại.
         </v-alert>
 
-        <!-- Lead score -->
-        <section v-if="props.contact" class="ip-section">
-          <div class="ip-section-title">
-            <span class="accent" style="background: var(--smax-success)" />
-            ⭐ Lead score
-          </div>
-          <div class="metrics-row">
-            <span class="metric-num">{{ props.contact.leadScore ?? 0 }}</span>
-            <span class="metric-label">điểm</span>
-            <span v-if="props.contact.lastActivity" class="metric-aux">
-              · cập nhật {{ relativeTime(props.contact.lastActivity) }}
-            </span>
-          </div>
-        </section>
+        <!-- Tag CRM section moved to MessageThread chat input bar (Smax-style) -->
 
-        <!-- Tag CRM hệ thống (cấp KH) -->
-        <section class="ip-section">
-          <div class="ip-section-title">
-            <span class="accent" style="background: var(--smax-info)" />
-            🏷 Tag CRM hệ thống
-            <span class="scope-tag global">cấp KH</span>
-          </div>
-          <div class="tag-list">
-            <span v-for="tag in form.tags" :key="tag" class="tag-chip">
-              {{ tag }}
-              <span class="x" @click="removeTag(tag)">×</span>
-            </span>
-            <input
-              v-if="addingTag"
-              v-model="newTag"
-              ref="newTagInput"
-              class="tag-input"
-              placeholder="Tag mới…"
-              @keydown.enter="confirmAddTag"
-              @blur="confirmAddTag"
-            />
-            <button v-else class="tag-chip add" @click="startAddTag">+ Thêm</button>
-          </div>
-          <!-- Quick-add suggestions khi chưa có tag nào -->
-          <div v-if="!form.tags.length && !addingTag" class="tag-suggestions">
-            <span class="suggestion-label">Gắn nhanh:</span>
-            <button
-              v-for="s in TAG_SUGGESTIONS"
-              :key="s"
-              class="tag-chip suggestion"
-              @click="addSuggestedTag(s)"
-            >+ {{ s }}</button>
-          </div>
+        <!-- ──── CRM Notes thread (Facebook-style, AI appointment suggest) ──── -->
+        <section class="ip-section ip-notes-section">
+          <NotesSection
+            :contact-id="props.contactId"
+            :contact-name="headerFullName"
+            @appointment-created="onAppointmentCreated"
+          />
         </section>
       </div>
 
       <!-- ══════ TAB 2: QUAN HỆ (per-nick) ══════ -->
       <div v-show="activeTab === 'relations'" class="tab-pane">
-        <!-- Per-nick state -->
-        <section v-if="props.contact" class="ip-section pernick-state">
+        <!-- Nick CRM chăm (= KH Con per nick) — real data từ /contacts/:id -->
+        <section v-if="relations.friends.length" class="ip-section">
           <div class="ip-section-title">
-            <span class="accent" style="background: var(--smax-warning)" />
-            🤝 Trạng thái nick × KH
-            <span class="scope-tag pernick">per-nick</span>
+            <span class="accent" style="background: var(--smax-info)" />
+            💬 Nick CRM đang chăm ({{ relations.friends.length }})
+            <span class="scope-tag global">per-nick</span>
           </div>
-          <div class="kv-list">
-            <div class="kv-row">
-              <span class="k">Nick:</span>
-              <span class="v">{{ activeNickName || '—' }}</span>
-            </div>
-            <div class="kv-row">
-              <span class="k">Sale:</span>
-              <span class="v">{{ activeSaleName || '—' }}</span>
-            </div>
-            <div class="kv-row">
-              <span class="k">Trạng thái KB:</span>
-              <span class="status-pill pill-success">✓ Đã KB</span>
-              <span class="muted">(MOCK — chờ <code>friend.relationshipKind</code>)</span>
-            </div>
-            <div class="kv-row">
-              <span class="k">Tin (in/out):</span>
-              <strong>{{ props.contact.totalInbound ?? 0 }} / {{ props.contact.totalOutbound ?? 0 }}</strong>
-            </div>
-            <div v-if="props.contact.lastInteractionAt" class="kv-row">
-              <span class="k">Tương tác cuối:</span>
-              <span class="v">{{ relativeTime(props.contact.lastInteractionAt) }}</span>
+          <div class="friends-list">
+            <div v-for="f in relations.friends" :key="f.id" class="friend-card">
+              <div class="friend-card-head">
+                <Avatar :src="f.zaloAccount.avatarUrl" :name="f.zaloAccount.displayName || 'Nick'" :size="32" :gradient-seed="f.id" platform="zalo" />
+                <div class="friend-card-title">
+                  <div class="friend-name">{{ f.zaloAccount.displayName || 'Nick' }}</div>
+                  <div class="friend-sub">
+                    <span v-if="f.zaloAccount.owner" class="sale-name">Sale: {{ f.zaloAccount.owner.fullName }}</span>
+                  </div>
+                </div>
+                <span :class="['status-pill', friendKindClass(f.relationshipKind)]" :title="'Trạng thái kết bạn Zalo'">
+                  {{ friendKindLabel(f.relationshipKind) }}
+                </span>
+                <span
+                  v-if="f.hasConversation"
+                  class="conv-badge conv-badge--on"
+                  title="Đã từng nhắn 1-1 với KH qua nick này"
+                >💬</span>
+                <span
+                  v-else
+                  class="conv-badge conv-badge--off"
+                  title="Chỉ kết bạn Zalo, chưa có hội thoại 1-1 nào"
+                >ø</span>
+              </div>
+              <!-- KH theo nick này: avatar + tên Zalo riêng cho identity này (KHÔNG dùng tên KH Cha) -->
+              <div class="friend-customer-row">
+                <Avatar
+                  :src="f.zaloAvatarUrl"
+                  :name="f.zaloDisplayName || `KH-${f.zaloUidInNick.slice(-4)}`"
+                  :size="28"
+                  :gradient-seed="f.zaloUidInNick"
+                />
+                <div class="friend-customer-info">
+                  <div class="friend-customer-name">{{ f.zaloDisplayName || `KH-${f.zaloUidInNick.slice(-4)}` }}</div>
+                  <code class="uid">UID: {{ f.zaloUidInNick }}</code>
+                </div>
+              </div>
+              <div class="friend-card-row">
+                <span class="lbl">Trạng thái KH:</span>
+                <span
+                  v-if="f.statusRef"
+                  class="chip status-edit"
+                  :style="{ background: chipBg(f.statusRef.color), color: chipFg(f.statusRef.color) }"
+                >{{ f.statusRef.name }}</span>
+                <span v-else class="empty">— đặt —</span>
+                <span class="lbl ml-auto">Score:</span>
+                <strong>{{ f.leadScore ?? 0 }}</strong>
+              </div>
+              <div class="friend-card-row meta-line">
+                <span>📥 <strong>{{ f.totalInbound }}</strong></span>
+                <span>📤 <strong>{{ f.totalOutbound }}</strong></span>
+                <span v-if="f.becameFriendAt">KB: {{ relativeTime(f.becameFriendAt) }}</span>
+                <span v-if="f.lastInboundAt">Last: {{ relativeTime(f.lastInboundAt) }}</span>
+              </div>
+              <div class="friend-card-actions">
+                <button class="btn-sm-danger" :title="'Tách Con này thành KH Cha mới'" @click="onPromoteFriend(f)">
+                  ✂ Tách thành KH Cha riêng
+                </button>
+              </div>
             </div>
           </div>
         </section>
+
+        <!-- Empty state -->
+        <div v-if="!relations.friends.length" class="tab-empty">
+          <p>KH này chưa có nick CRM nào chăm.</p>
+        </div>
 
         <!-- Label Zalo native (per-nick) -->
         <section class="ip-section">
@@ -250,31 +278,6 @@
           />
         </section>
 
-        <!-- 3 nick khác cũng chăm -->
-        <section v-if="otherNicks.length" class="ip-section">
-          <div class="ip-section-title">
-            <span class="accent" style="background: var(--smax-info)" />
-            ⚠ {{ otherNicks.length }} nick khác cũng chăm
-            <span class="scope-tag global">cấp KH</span>
-          </div>
-          <div class="nick-rows">
-            <div v-for="n in otherNicks" :key="n.id" class="nick-row">
-              <Avatar :name="n.name" :size="26" :gradient-seed="n.id" platform="zalo" />
-              <div class="ni-name">{{ n.name }}</div>
-              <span :class="['status-pill', n.pillClass]">{{ n.pillLabel }}</span>
-            </div>
-          </div>
-        </section>
-
-        <!-- Empty state khi tất cả backend chưa wire -->
-        <div v-if="!otherNicks.length && !zaloLabels.length && !perPairTags.length" class="tab-empty">
-          <p>Phần lớn dữ liệu per-nick chờ backend bổ sung:</p>
-          <ul>
-            <li>Label Zalo native (sync SDK)</li>
-            <li>Tag per-pair (<code>Friend.crmTagsPerNick</code>)</li>
-            <li>Aggregate nick khác (<code>GET /contacts/:id/friendships</code>)</li>
-          </ul>
-        </div>
       </div>
 
       <!-- ══════ TAB 3: HOẠT ĐỘNG (AI + Automation + Lịch hẹn) ══════ -->
@@ -318,31 +321,11 @@
       </div>
     </div>
 
-    <!-- ════════ FOOTER ghi chú nhanh (pinned, collapsible) ════════ -->
-    <footer class="ip-note-footer" :class="{ expanded: noteExpanded }">
-      <button class="note-toggle" @click="noteExpanded = !noteExpanded">
-        <span class="note-toggle-icon">📝</span>
-        <span class="note-toggle-label">Ghi chú nhanh</span>
-        <span v-if="noteDraft && !noteExpanded" class="note-preview">{{ notePreview }}</span>
-        <span class="caret">{{ noteExpanded ? '▾' : '▴' }}</span>
-      </button>
-      <textarea
-        v-if="noteExpanded"
-        v-model="noteDraft"
-        class="note-input"
-        placeholder="Ctrl+Enter để lưu, Escape để hủy…"
-        rows="3"
-        @keydown.ctrl.enter.prevent="saveNote"
-        @keydown.meta.enter.prevent="saveNote"
-        @keydown.escape="onCancelNote"
-        @blur="saveNote"
-      />
-    </footer>
   </aside>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, watch } from 'vue';
+import { ref, computed, watch, onBeforeUnmount } from 'vue';
 import type { Contact } from '@/composables/use-contacts';
 import type { AiSentiment } from '@/composables/use-chat';
 import { useChatContactPanel } from '@/composables/use-chat-contact-panel';
@@ -352,11 +335,17 @@ import AiSentimentBadge from '@/components/ai/ai-sentiment-badge.vue';
 import AutomationCardList, { type AutomationCard } from './AutomationCardList.vue';
 import TagChipList from '@/components/ui/TagChipList.vue';
 import Avatar from '@/components/ui/Avatar.vue';
+import CareStatusBadge from '@/components/ui/CareStatusBadge.vue';
+import type { CareStatusValue } from '@/constants/care-status';
 import { useToast } from '@/composables/use-toast';
+import { api } from '@/api';
+import NotesSection from './NotesSection.vue';
 
 const props = defineProps<{
   contactId: string | null;
   contact: Contact | null;
+  // Nick CRM đang xem KH này — dùng để xác định Friend row "active" cho per-pair tag.
+  activeZaloAccountId?: string | null;
   aiSummary: string;
   aiSummaryLoading: boolean;
   aiSentiment: AiSentiment | null;
@@ -383,24 +372,140 @@ const {
 // ════════ Tab state (persist sang tab khác KH khác) ════════
 const activeTab = ref<'profile' | 'relations' | 'activity'>('profile');
 
-// ════════ Care status (status field — cycle through preset) ════════
-const CARE_STATUSES_LOCAL = [
-  { value: 'new',          label: '🆕 Mới' },
-  { value: 'interested',   label: '💬 Quan tâm' },
-  { value: 'caring',       label: '🤝 Chăm sóc' },
-  { value: 'negotiating',  label: '⚡ Đàm phán giá' },
-  { value: 'hot',          label: '🔥 Nóng' },
-  { value: 'cold',         label: '❄ Lạnh' },
-  { value: 'won',          label: '✅ Đã chốt' },
-];
-const careStatusLabel = computed(() => {
-  const found = CARE_STATUSES_LOCAL.find(s => s.value === form.status);
-  return found?.label || '🆕 Đặt trạng thái';
+// Info section auto-collapse: mặc định compact (chỉ Tên + SĐT). Click tab Hồ Sơ
+// hoặc bấm "Xem đầy đủ" → expand, đếm 5s rồi tự thu gọn lại.
+const infoExpanded = ref(false);
+const collapseRemain = ref(5);
+let collapseTimer: ReturnType<typeof setInterval> | null = null;
+function clearCollapseTimer() {
+  if (collapseTimer) { clearInterval(collapseTimer); collapseTimer = null; }
+}
+function startCollapseCountdown() {
+  clearCollapseTimer();
+  collapseRemain.value = 5;
+  collapseTimer = setInterval(() => {
+    collapseRemain.value--;
+    if (collapseRemain.value <= 0) {
+      infoExpanded.value = false;
+      clearCollapseTimer();
+    }
+  }, 1000);
+}
+function toggleInfoExpand() {
+  infoExpanded.value = !infoExpanded.value;
+  if (infoExpanded.value) startCollapseCountdown();
+  else clearCollapseTimer();
+}
+// Khi click tab Hồ Sơ → expand + start countdown
+watch(activeTab, (tab) => {
+  if (tab === 'profile') {
+    infoExpanded.value = true;
+    startCollapseCountdown();
+  } else {
+    clearCollapseTimer();
+    infoExpanded.value = false;
+  }
 });
-function onCycleCareStatus() {
-  const idx = CARE_STATUSES_LOCAL.findIndex(s => s.value === form.status);
-  const next = CARE_STATUSES_LOCAL[(idx + 1) % CARE_STATUSES_LOCAL.length];
-  form.status = next.value;
+
+onBeforeUnmount(() => clearCollapseTimer());
+
+// Animation: khi NotesSection emit 'appointment-created' (fly anim đã xong) → +1 badge với bump effect.
+// pendingAptBump giữ count cho tới khi reloadAppointments() refresh data thực từ backend.
+const pendingAptBump = ref(0);
+const badgeBump = ref(false);
+function onAppointmentCreated() {
+  pendingAptBump.value++;
+  badgeBump.value = true;
+  setTimeout(() => { badgeBump.value = false; }, 600);
+  // Refresh real data từ backend rồi reset bump (tránh double count)
+  reloadAppointments().then(() => {
+    setTimeout(() => { pendingAptBump.value = 0; }, 300);
+  });
+}
+
+// ════════ Relations data (friends per nick = KH Con) — fetch khi đổi contact ═══
+interface FriendItem {
+  id: string;
+  zaloUidInNick: string;
+  relationshipKind: string;
+  hasConversation: boolean;
+  totalInbound: number;
+  totalOutbound: number;
+  becameFriendAt: string | null;
+  lastInboundAt: string | null;
+  leadScore: number;
+  zaloDisplayName: string | null;
+  zaloAvatarUrl: string | null;
+  crmTagsPerNick: string[];
+  statusRef: { id: string; name: string; order: number; color: string | null } | null;
+  zaloAccount: { id: string; displayName: string | null; avatarUrl?: string | null; owner: { id: string; fullName: string } | null };
+}
+interface RelationsState {
+  friends: FriendItem[];
+}
+const relations = ref<RelationsState>({ friends: [] });
+
+async function fetchRelations(contactId: string) {
+  try {
+    const res = await api.get<{ friends?: FriendItem[] }>(`/contacts/${contactId}`);
+    // Sort: "đang chat" lên đầu — sale chỉ care nick đã thực sự nhắn 1-1.
+    const all = res.data.friends || [];
+    all.sort((a, b) => {
+      if (a.hasConversation !== b.hasConversation) return a.hasConversation ? -1 : 1;
+      const at = a.lastInboundAt || '';
+      const bt = b.lastInboundAt || '';
+      return bt.localeCompare(at);
+    });
+    relations.value = { friends: all };
+  } catch (err) {
+    console.error('[ChatContactPanel] fetchRelations error:', err);
+    relations.value = { friends: [] };
+  }
+}
+
+function chipBg(hex: string | null | undefined): string {
+  if (!hex) return 'rgba(90,100,120,0.10)';
+  const m = hex.match(/^#([0-9a-f]{6})$/i);
+  if (!m) return 'rgba(90,100,120,0.10)';
+  const n = parseInt(m[1], 16);
+  return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},0.15)`;
+}
+function chipFg(hex: string | null | undefined): string { return hex || 'var(--smax-grey-700)'; }
+
+async function onPromoteFriend(f: FriendItem) {
+  const name = prompt(`Tên cho KH Cha mới (Nick "${f.zaloAccount.displayName}" × UID ${f.zaloUidInNick}):`, '');
+  if (name === null) return;  // cancelled
+  try {
+    const res = await api.post<{ newContact: { id: string; fullName: string }; movedConversations: number }>(
+      `/friends/${f.id}/promote-to-parent`,
+      { fullName: name.trim() || undefined },
+    );
+    toast.success(`Đã tạo KH Cha mới: ${res.data.newContact.fullName}. ${res.data.movedConversations} conversation đã chuyển.`);
+    if (props.contactId) await fetchRelations(props.contactId);
+    emit('saved');
+  } catch (err) {
+    const msg = (err as { response?: { data?: { error?: string } } }).response?.data?.error || 'Tách thất bại';
+    toast.error(msg);
+  }
+}
+
+function friendKindLabel(k: string): string {
+  if (k === 'friend') return '✓ Đã KB';
+  if (k === 'pending_friend') return '… Pending';
+  if (k === 'chatting_stranger') return '👥 Lạ';
+  if (k === 'ghost') return '🚫 Ngắt';
+  return k;
+}
+function friendKindClass(k: string): string {
+  if (k === 'friend') return 'pill-success';
+  if (k === 'pending_friend') return 'pill-warning';
+  if (k === 'chatting_stranger') return 'pill-info';
+  return 'pill-grey';
+}
+
+// ════════ Care status (dropdown qua CareStatusBadge — emit value mới) ════════
+function onChangeCareStatus(value: CareStatusValue) {
+  form.status = value;
   saveContact();
 }
 
@@ -409,40 +514,21 @@ const headerFullName = computed(() =>
   props.contact?.crmName || props.contact?.fullName || 'Khách hàng',
 );
 
+// Lead score tier để màu badge overlay trên avatar (thấp/TB/cao)
+const leadScoreTier = computed(() => {
+  const s = props.contact?.leadScore ?? 0;
+  if (s >= 70) return 'tier-hot';
+  if (s >= 40) return 'tier-warm';
+  if (s >= 10) return 'tier-cool';
+  return 'tier-cold';
+});
+
 // ════════ Phones extras ════════
 const showExtraPhones = ref(false);
 const filledExtras = computed(() => [form.phone2, form.phone3].filter(Boolean).length);
 
-// ════════ Tag list (CRM hệ thống) ════════
-const addingTag = ref(false);
-const newTag = ref('');
-const newTagInput = ref<HTMLInputElement | null>(null);
-function startAddTag() {
-  addingTag.value = true;
-  nextTick(() => newTagInput.value?.focus());
-}
-function confirmAddTag() {
-  const t = newTag.value.trim();
-  if (t && !form.tags.includes(t)) {
-    form.tags.push(t);
-    saveContact();
-  }
-  newTag.value = '';
-  addingTag.value = false;
-}
-function removeTag(tag: string) {
-  form.tags = form.tags.filter(t => t !== tag);
-  saveContact();
-}
-
-// Tag quick-add suggestions cho contact mới chưa có tag
-const TAG_SUGGESTIONS = ['vip', 'quan_tam', 'cần_báo_giá', 'hot_lead', 'lạnh', 'đầu_tư'] as const;
-function addSuggestedTag(tag: string) {
-  if (!form.tags.includes(tag)) {
-    form.tags.push(tag);
-    saveContact();
-  }
-}
+// Tag CRM hệ thống đã chuyển sang TagCrmBar trên chat input (Cột 3).
+// Zalo Real labels chuyển sang dropdown trong header Cột 3 (MessageThread).
 
 // ════════ Automation cards (placeholder — chờ backend) ════════
 const automationCards = computed<AutomationCard[]>(() => {
@@ -452,19 +538,32 @@ const automationCards = computed<AutomationCard[]>(() => {
 function onAutomationAction(_id: string, _kind: string) { /* TODO wire to API */ }
 function onAttachAutomation() { toast.warning('Gắn automation: chờ backend schema delta'); }
 
-// ════════ Per-nick state ════════
-// MOCK: cần backend expose zaloAccount + sale + relationshipKind cho cặp đang xem
-const activeNickName = computed(() => null as string | null);
-const activeSaleName = computed(() => null as string | null);
-
 // MOCK: zaloLabels (per-pair native labels) chưa expose qua API
 const zaloLabels = ref<string[]>([]);
 
-// MOCK: per-pair CRM tags (Friend.crmTagsPerNick) — chờ schema delta
-const perPairTags = ref<string[]>([]);
-function onPerPairTagsChange(tags: string[]) {
-  perPairTags.value = tags;
-  toast.warning('Per-pair tag chưa wire — chờ backend');
+// Per-pair CRM tags: tags RIÊNG cho cặp (nick active × KH). KHÁC contact.tags
+// (cấp KH chung). Trigger PATCH /friends/:id để persist.
+const activeFriend = computed<FriendItem | null>(() => {
+  if (!props.activeZaloAccountId) return null;
+  return relations.value.friends.find(f => f.zaloAccount.id === props.activeZaloAccountId) || null;
+});
+const perPairTags = computed<string[]>({
+  get: () => activeFriend.value?.crmTagsPerNick || [],
+  set: (v) => {
+    if (activeFriend.value) activeFriend.value.crmTagsPerNick = v;
+  },
+});
+async function onPerPairTagsChange(tags: string[]) {
+  if (!activeFriend.value) {
+    toast.warning('Chưa xác định nick CRM nào đang chăm KH này');
+    return;
+  }
+  try {
+    await api.patch(`/friends/${activeFriend.value.id}`, { crmTagsPerNick: tags });
+  } catch (err) {
+    console.error('[ChatContactPanel] save per-pair tags failed:', err);
+    toast.error('Lưu tag thất bại');
+  }
 }
 
 // MOCK: 3 nick khác cũng chăm — chờ /contacts/:id/friendships
@@ -484,40 +583,15 @@ const hasAnyActivity = computed(() =>
   !!(props.aiSummary || props.aiSentiment || automationCards.value.length || contactAppointments.value.length),
 );
 
-// ════════ Note footer (pinned, collapsible) ════════
 const toast = useToast();
-const noteExpanded = ref(false);
-const noteDraft = ref('');
-const lastSavedNote = ref('');
-const notePreview = computed(() => {
-  const t = noteDraft.value.trim();
-  return t.length > 32 ? t.slice(0, 32) + '…' : t;
-});
 
-function saveNote() {
-  if (noteDraft.value === lastSavedNote.value) return;
-  (form as Record<string, unknown>).notes = noteDraft.value;
-  saveContact();
-  lastSavedNote.value = noteDraft.value;
-  toast.success('Đã lưu ghi chú');
-}
-function onCancelNote() {
-  noteDraft.value = lastSavedNote.value;
-  noteExpanded.value = false;
-}
-
-watch(() => props.contact?.notes, (n) => {
-  if (n != null) {
-    noteDraft.value = n;
-    lastSavedNote.value = n;
-  }
-}, { immediate: true });
-
-// Khi đổi sang contact mới, reset về tab Hồ sơ + collapse note
-watch(() => props.contactId, () => {
+// Khi đổi sang contact mới, reset về tab Hồ sơ + refetch relations
+// (NotesSection tự fetch khi prop contactId đổi)
+watch(() => props.contactId, (id) => {
   activeTab.value = 'profile';
-  noteExpanded.value = false;
-});
+  if (id) void fetchRelations(id);
+  else relations.value = { friends: [] };
+}, { immediate: true });
 
 function relativeTime(dateStr: string) {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -555,10 +629,35 @@ function relativeTime(dateStr: string) {
 }
 .ip-close:hover { background: var(--smax-grey-100); }
 
+.ip-avatar-wrap {
+  position: relative;
+  display: inline-block;
+}
 .ip-avatar-big {
   display: block;
   margin: 0 auto;
 }
+
+/* Lead score badge — overlay trên avatar (góc dưới-phải), Smax-style "điểm KH" */
+.lead-score-badge {
+  position: absolute;
+  bottom: -3px;
+  right: -8px;
+  background: var(--smax-bg, #fff);
+  border: 2px solid #fff;
+  border-radius: 11px;
+  padding: 1px 7px 1px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+  white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+  cursor: help;
+}
+.lead-score-badge.tier-hot   { background: #ffebee; color: #c62828; border-color: #ffcdd2; }
+.lead-score-badge.tier-warm  { background: #fff3e0; color: #ef6c00; border-color: #ffe0b2; }
+.lead-score-badge.tier-cool  { background: #e3f2fd; color: #1565c0; border-color: #bbdefb; }
+.lead-score-badge.tier-cold  { background: #f5f6fa; color: var(--smax-grey-600); border-color: #e0e0e0; }
 
 .ip-name-line {
   margin-top: 7px;
@@ -628,6 +727,17 @@ function relativeTime(dateStr: string) {
   min-width: 16px;
   line-height: 14px;
   text-align: center;
+  transition: transform 0.18s ease;
+}
+/* Bump effect — khi NotesSection báo created → scale + glow để feedback +1 */
+.ip-tab.badge-bump .tab-badge {
+  animation: badgeBump 0.6s ease;
+}
+@keyframes badgeBump {
+  0%   { transform: scale(1); background: var(--smax-primary); }
+  30%  { transform: scale(1.5); background: #f57c00; box-shadow: 0 0 0 6px rgba(245, 124, 0, 0.25); }
+  60%  { transform: scale(1.1); background: #f57c00; }
+  100% { transform: scale(1); background: var(--smax-primary); box-shadow: none; }
 }
 
 /* ════════ Tab content (scroll) ════════ */
@@ -652,6 +762,53 @@ function relativeTime(dateStr: string) {
   max-width: 250px;
 }
 .tab-empty li { margin: 4px 0; }
+.parent-card { display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--smax-grey-200); border-radius: 8px; background: rgba(0,242,255,0.04); }
+.parent-info { flex: 1; min-width: 0; }
+.parent-name { font-weight: 600; font-size: 13px; }
+.parent-meta { display: flex; gap: 8px; align-items: center; font-size: 11px; flex-wrap: wrap; margin-top: 4px; }
+.friends-list { display: flex; flex-direction: column; gap: 10px; }
+.friend-card { border: 1px solid var(--smax-grey-200); border-radius: 8px; padding: 10px 12px; background: var(--smax-bg); }
+.friend-card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.friend-card-title { flex: 1; min-width: 0; }
+.friend-name { font-weight: 600; font-size: 13px; }
+.friend-sub { font-size: 11px; color: var(--smax-grey-600); margin-top: 2px; }
+.sale-name { font-weight: 500; }
+.friend-card-row { display: flex; align-items: center; gap: 6px; font-size: 11.5px; padding: 3px 0; flex-wrap: wrap; }
+.friend-card-row .lbl { color: var(--smax-grey-600); }
+.friend-card-row .ml-auto { margin-left: auto; }
+.friend-card-row.meta-line { padding-top: 6px; border-top: 1px dashed var(--smax-grey-200); margin-top: 4px; color: var(--smax-grey-700); }
+.friend-card-row.meta-line strong { color: var(--smax-text); }
+.conv-badge {
+  font-size: 11px; font-weight: 700;
+  padding: 1px 6px; border-radius: 4px;
+  margin-left: 4px;
+}
+.conv-badge--on  { background: rgba(0,200,83,0.15); color: #00897b; }
+.conv-badge--off { background: rgba(0,0,0,0.06);    color: #999;    }
+.friend-customer-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; margin: 4px 0 6px;
+  background: var(--smax-grey-50);
+  border-radius: 6px;
+  border-left: 3px solid var(--smax-primary);
+}
+.friend-customer-info { flex: 1; min-width: 0; }
+.friend-customer-name {
+  font-size: 12.5px; font-weight: 600;
+  color: var(--smax-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.friend-customer-row .uid {
+  display: inline-block;
+  margin-top: 2px;
+}
+.friend-card-actions { display: flex; justify-content: flex-end; gap: 6px; padding-top: 8px; border-top: 1px dashed var(--smax-grey-200); margin-top: 6px; }
+.btn-sm-danger { padding: 4px 10px; font-size: 11px; border: 1px solid #ffcdd2; color: #c62828; border-radius: 4px; background: rgba(255,82,82,0.05); cursor: pointer; }
+.btn-sm-danger:hover { background: rgba(255,82,82,0.15); }
+.status-edit { cursor: pointer; padding: 2px 8px; border-radius: 10px; font-size: 11px; }
+.status-edit:hover { filter: brightness(1.1); }
+.uid { font-family: monospace; font-size: 10.5px; color: var(--smax-grey-700); background: rgba(0,0,0,0.04); padding: 1px 4px; border-radius: 3px; }
+.chip-grey { background: rgba(90,100,120,0.10); color: var(--smax-grey-700); padding: 1px 7px; border-radius: 9px; font-size: 10.5px; }
 .tab-empty code {
   background: var(--smax-grey-100);
   padding: 0 4px; border-radius: 3px;
@@ -660,6 +817,20 @@ function relativeTime(dateStr: string) {
 
 /* ════════ Inline form ════════ */
 .ip-form { padding: 4px 0; border-bottom: 1px solid var(--smax-grey-200); }
+.info-expand-toggle {
+  width: 100%;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--smax-primary, #2962ff);
+  font-weight: 500;
+  padding: 6px 13px;
+  text-align: left;
+  transition: background 0.12s;
+}
+.info-expand-toggle:hover { background: var(--smax-primary-soft, #e3f2fd); }
 .ip-form-row {
   display: grid;
   grid-template-columns: 22px 80px 1fr;
@@ -863,54 +1034,8 @@ function relativeTime(dateStr: string) {
 }
 .ni-name { flex: 1; font-size: 12px; color: var(--smax-text); }
 
-/* ════════ Footer Ghi chú pinned ════════ */
-.ip-note-footer {
-  flex-shrink: 0;
-  border-top: 1px solid var(--smax-grey-200);
-  background: var(--smax-grey-50);
-}
-.note-toggle {
-  width: 100%;
-  background: transparent; border: none;
-  padding: 9px 13px;
-  display: flex; align-items: center; gap: 7px;
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 12.5px;
-  color: var(--smax-grey-700);
-  text-align: left;
-}
-.note-toggle:hover { background: var(--smax-grey-100); }
-.note-toggle-icon { font-size: 14px; }
-.note-toggle-label { font-weight: 600; color: var(--smax-text); flex-shrink: 0; }
-.note-preview {
-  flex: 1; min-width: 0;
-  color: var(--smax-grey-700);
-  font-style: italic;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.note-toggle .caret { color: var(--smax-grey-700); font-size: 10px; }
-
-.ip-note-footer.expanded .note-toggle {
-  background: var(--smax-bg);
-  border-bottom: 1px solid var(--smax-grey-200);
-}
-.note-input {
-  width: 100%;
-  min-height: 70px;
-  max-height: 200px;
-  border: none;
-  border-top: 1px solid var(--smax-grey-100);
-  padding: 9px 13px;
-  font-size: 12.5px;
-  font-family: inherit;
-  resize: vertical;
-  outline: none;
-  color: var(--smax-text);
-  background: var(--smax-bg);
-  display: block;
-}
-.note-input:focus {
-  box-shadow: inset 0 0 0 2px rgba(33,150,243,0.10);
+/* ════════ Notes section in Tab Hồ Sơ ════════ */
+.ip-notes-section {
+  margin-top: 10px;
 }
 </style>

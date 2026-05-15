@@ -297,6 +297,32 @@ export async function detectDuplicates(): Promise<void> {
       }
     }
 
+    // ── (7) Parent candidates: name+phone TRÙNG nhưng globalId KHÁC ────
+    //     → suggest user as cha-con (cross-Zalo-identity human-level link).
+    //     NOT auto-merge; save ParentCandidate cho sale duyệt.
+    const parentBy = new Map<string, ContactLite[]>();
+    for (const c of filterRemaining()) {
+      if (!c.fullName || !c.phone) continue;
+      const key = `${normName(c.fullName)}|${normPhone(c.phone)}`;
+      if (!parentBy.has(key)) parentBy.set(key, []);
+      parentBy.get(key)!.push(c);
+    }
+    for (const group of parentBy.values()) {
+      if (group.length < 2) continue;
+      // Cần có ít nhất 2 globalId khác nhau (cross-identity), nếu cùng globalId thì đã auto-merge ở (1)
+      const distinctGlobalIds = new Set(group.filter(c => c.zaloGlobalId).map(c => c.zaloGlobalId!));
+      if (distinctGlobalIds.size < 2) continue;
+      const ids = [...group].map(c => c.id).sort();
+      // Skip nếu đã có ParentCandidate chưa dismiss cho cùng cụm
+      const existing = await prisma.parentCandidate.findFirst({
+        where: { orgId: org.id, dismissed: false, contactIds: { equals: ids } },
+      });
+      if (existing) continue;
+      await prisma.parentCandidate.create({
+        data: { orgId: org.id, contactIds: ids, matchType: 'name_phone', confidence: 0.9 },
+      });
+    }
+
     totalConflictGroups += conflictRef.count;
   }
 

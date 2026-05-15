@@ -9,6 +9,7 @@ backups/
 # Local dev artifacts — không commit
 .backfill*.sql
 .diag.sql
+TODO.local.md
 /frontend/public/chat-smax-*.html
 /frontend/public/chat-perpair-context.html
 /frontend/public/contacts-approach-*.html
