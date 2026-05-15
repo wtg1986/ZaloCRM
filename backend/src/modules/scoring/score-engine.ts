@@ -136,6 +136,17 @@ export async function applySignalsToFriend(
     if (friend.contactId) {
       updateContactAggregateAsync(friend.contactId);
     }
+
+    // Trigger stage promotion check (fire-and-forget). Score change can push
+    // Friend across stage criteria → auto-promote if rules match.
+    void (async () => {
+      try {
+        const { evaluateAndPromote } = await import('./stage-promotion.js');
+        await evaluateAndPromote(friendId);
+      } catch {
+        /* silent */
+      }
+    })();
   } catch (err) {
     logger.error({ friendId, orgId, trigger, err }, 'applySignalsToFriend failed');
   }
