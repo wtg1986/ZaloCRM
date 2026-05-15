@@ -503,9 +503,9 @@ async function removeFriendAlias(accountId: string, userId: string) {
     (api) => api.removeFriendAlias(userId));
 }
 
-async function getAliasList(accountId: string) {
+async function getAliasList(accountId: string, count = 100, page = 1) {
   return exec({ accountId, category: 'friend_read', operation: 'getAliasList' },
-    (api) => api.getAliasList());
+    (api) => api.getAliasList(count, page));
 }
 
 async function blockUser(accountId: string, userId: string) {

@@ -73,6 +73,8 @@ export interface FriendshipInfo {
   zaloLabels?: Array<{ id?: string; name?: string; color?: string }>;
   /** Per-pair CRM tags (kèm Zalo-mirrored "🔵 X" tags). Source of truth Friend-level. */
   crmTagsPerNick?: string[];
+  /** "Tên gợi nhớ" — alias sale đặt qua Zalo Real, sync 2-way với CRM. */
+  aliasInNick?: string | null;
 }
 
 export interface Conversation {

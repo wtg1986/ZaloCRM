@@ -718,6 +718,7 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         select: {
           id: true, contactId: true, statusId: true, leadScore: true,
           crmTagsPerNick: true, aliasInNick: true,
+          zaloAccountId: true, zaloUidInNick: true,  // cần để push alias qua SDK
         },
       });
       if (!friend) return reply.status(404).send({ error: 'Friend not found' });
@@ -776,8 +777,33 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
             action: 'friend_alias_change',
             entityType: 'contact',
             entityId,
-            details: { old: friend.aliasInNick, new: body.aliasInNick, friendId: friend.id },
+            details: { old: friend.aliasInNick, new: body.aliasInNick, friendId: friend.id, trigger: 'crm_edit' },
           });
+
+          // CRM → Zalo Real: push alias via SDK. Fire-and-forget — không block PUT
+          // response. Nếu SDK fail (account offline / network), log warn; lần sync
+          // alias periodic sẽ thấy mismatch và reconcile (CRM là source of truth ở
+          // moment user edit, nhưng nếu Zalo Real bị thay đổi parallel → race lần
+          // touch sau resolve).
+          const newAlias = body.aliasInNick;
+          const uidToTarget = friend.zaloUidInNick;
+          const accountIdToCall = friend.zaloAccountId;
+          if (uidToTarget && accountIdToCall) {
+            void (async () => {
+              try {
+                const { zaloOps } = await import('../../shared/zalo-operations.js');
+                if (newAlias && newAlias.trim()) {
+                  await zaloOps.changeFriendAlias(accountIdToCall, newAlias.trim(), uidToTarget);
+                  logger.info(`[friends] Pushed alias "${newAlias}" → Zalo for uid=${uidToTarget}`);
+                } else {
+                  await zaloOps.removeFriendAlias(accountIdToCall, uidToTarget);
+                  logger.info(`[friends] Removed alias on Zalo for uid=${uidToTarget}`);
+                }
+              } catch (err) {
+                logger.warn(`[friends] Push alias to Zalo failed (uid=${uidToTarget}):`, err);
+              }
+            })();
+          }
         }
         if (cleanTags !== undefined) {
           const oldT = Array.isArray(friend.crmTagsPerNick) ? (friend.crmTagsPerNick as string[]) : [];

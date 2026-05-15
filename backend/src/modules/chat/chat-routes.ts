@@ -246,6 +246,7 @@ export async function chatRoutes(app: FastifyInstance) {
       relationshipKind: string; friendshipStatus: string;
       becameFriendAt: Date | null; firstMessageAt: Date | null;
       crmTagsPerNick: unknown;
+      aliasInNick: string | null;
     }>();
     if (userPairs.length) {
       const friends = await prisma.friend.findMany({
@@ -255,6 +256,7 @@ export async function chatRoutes(app: FastifyInstance) {
           relationshipKind: true, friendshipStatus: true,
           becameFriendAt: true, firstMessageAt: true,
           crmTagsPerNick: true,                // per-pair CRM tags (kèm Zalo-mirrored "🔵 X")
+          aliasInNick: true,                   // "Tên gợi nhớ" Zalo, sync 2-way
         },
       });
       friendMap = new Map(friends.map(f => [`${f.zaloAccountId}:${f.contactId}`, {
@@ -263,6 +265,7 @@ export async function chatRoutes(app: FastifyInstance) {
         becameFriendAt: f.becameFriendAt,
         firstMessageAt: f.firstMessageAt,
         crmTagsPerNick: f.crmTagsPerNick,
+        aliasInNick: f.aliasInNick,
       }]));
     }
 
@@ -309,6 +312,7 @@ export async function chatRoutes(app: FastifyInstance) {
       statusRef: { id: string; name: string; color: string | null; order: number } | null;
       zaloLabels: unknown;
       crmTagsPerNick: unknown;
+      aliasInNick: string | null;
     } | null = null;
     if (conversation.threadType === 'user' && conversation.contactId && conversation.externalThreadId) {
       const f = await prisma.friend.findUnique({
@@ -326,6 +330,7 @@ export async function chatRoutes(app: FastifyInstance) {
           statusRef: { select: { id: true, name: true, color: true, order: true } },
           zaloLabels: true,
           crmTagsPerNick: true,
+          aliasInNick: true,
         },
       });
       friendship = f;

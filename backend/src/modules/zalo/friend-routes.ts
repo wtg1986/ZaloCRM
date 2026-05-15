@@ -289,14 +289,16 @@ export async function friendRoutes(app: FastifyInstance) {
     }
   });
 
-  // GET .../friends/aliases — all custom aliases
-  app.get(`${BASE}/aliases`, async (request: FastifyRequest, reply: FastifyReply) => {
+  // GET .../friends/aliases — all custom aliases (?count=N&page=P, default 100/1)
+  app.get(`${BASE}/aliases`, async (request: FastifyRequest<{ Querystring: { count?: string; page?: string } }>, reply: FastifyReply) => {
     const { accountId } = request.params as { accountId: string };
     const user = request.user!;
+    const count = Math.min(parseInt(request.query.count || '100') || 100, 1000);
+    const page = Math.max(parseInt(request.query.page || '1') || 1, 1);
     try {
       if (!await checkAccess(request, reply, accountId, 'read')) return;
       await resolveAccount(accountId, user.orgId);
-      const data = await zaloOps.getAliasList(accountId);
+      const data = await zaloOps.getAliasList(accountId, count, page);
       return { data };
     } catch (err) {
       return handleError(reply, err, 'friend-op');

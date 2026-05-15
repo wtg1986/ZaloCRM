@@ -54,6 +54,7 @@ export async function syncLabelsForAccount(
 ): Promise<{
   labels: Array<{ id: number; text: string; color: string; emoji: string | null; assignedCount: number }>;
   friendsUpdated: number;
+  aliasesUpdated: number;
   version: number;
 }> {
   const isDelta = Array.isArray(opts?.affectedUidsOnly);
@@ -340,6 +341,20 @@ export async function syncLabelsForAccount(
     }
   }
 
+  // Alias sync (Tên gợi nhớ): chỉ ở full-sync path. Delta path (assign-thread) bỏ qua
+  // vì user assign tag không liên quan đến alias. Fire-and-forget — không block label
+  // sync nếu alias pull lỗi (alias là enrichment, không critical).
+  let aliasesUpdated = 0;
+  if (!isDelta) {
+    try {
+      const { syncAliasesForAccount } = await import('./alias-sync.js');
+      const r = await syncAliasesForAccount(accountId, orgId);
+      aliasesUpdated = r.updated;
+    } catch (err) {
+      logger.warn(`[zalo-labels] Alias sync skipped for ${accountId}:`, err);
+    }
+  }
+
   return {
     labels: upserted.map(l => ({
       id: l.zaloLabelId,
@@ -349,6 +364,7 @@ export async function syncLabelsForAccount(
       assignedCount: Array.isArray(l.conversations) ? (l.conversations as string[]).length : 0,
     })),
     friendsUpdated,
+    aliasesUpdated,
     version,
   };
 }
