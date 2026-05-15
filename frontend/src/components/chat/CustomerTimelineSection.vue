@@ -44,27 +44,19 @@
       </div>
     </div>
 
-    <!-- Enter-to-save toggle (giống NotesSection) -->
-    <div class="tl-subbar">
-      <label class="enter-toggle" :title="enterToSave ? 'Enter = Lưu · Shift+Enter = xuống dòng' : 'Enter = xuống dòng · Ctrl+Enter = Lưu'">
-        <input type="checkbox" v-model="enterToSave" />
-        <span>Enter để lưu</span>
-      </label>
-    </div>
-
-    <!-- Note composer — luôn hiện ở đầu -->
+    <!-- Note composer — luôn hiện ở đầu. Enter = lưu, Shift+Enter = xuống dòng (mặc định) -->
     <div class="note-composer">
       <textarea
         v-model="rootDraft"
         class="note-input"
-        :placeholder="rootPlaceholder"
+        placeholder="Nhập ghi chú..."
         rows="1"
         @keydown="onComposerKeydown"
       />
       <button
         class="send-btn"
         :disabled="!rootDraft.trim() || saving"
-        :title="enterToSave ? 'Enter để lưu' : 'Ctrl+Enter để lưu'"
+        title="Enter để lưu · Shift+Enter để xuống dòng"
         @click="submitRoot"
       >
         <span v-if="saving">…</span>
@@ -140,7 +132,7 @@
               ref="replyInput"
               v-model="replyDraft"
               class="note-input"
-              placeholder="Trả lời…"
+              placeholder="Trả lời..."
               rows="1"
               @keydown="onReplyKeydown"
             />
@@ -225,16 +217,8 @@ const timeline = useTimeline(() => props.contactId);
 const { items, loading, loadingMore, hasMore } = timeline;
 const rootNoteCount = computed(() => timeline.rootNoteCount.value);
 
-// Note composer state
-const ENTER_KEY = 'zalocrm.notes.enterToSave';
-const enterToSave = ref<boolean>(localStorage.getItem(ENTER_KEY) !== '0');
-watch(enterToSave, (v) => { localStorage.setItem(ENTER_KEY, v ? '1' : '0'); });
+// Note composer state — Enter để lưu, Shift+Enter để xuống dòng (mặc định, không cần toggle)
 const rootDraft = ref('');
-const rootPlaceholder = computed(() =>
-  enterToSave.value
-    ? 'Ghi chú… (Enter để lưu, Shift+Enter xuống dòng)'
-    : 'Ghi chú… (Ctrl+Enter để lưu)',
-);
 
 const replyTarget = ref<string | null>(null);
 const replyDraft = ref('');
@@ -312,29 +296,18 @@ watch(() => props.contactId, (id) => {
 onMounted(() => loadPrefs());
 
 /* ── Note composer logic ─────────────────────────────────────────── */
+// Enter = lưu, Shift+Enter = xuống dòng (mặc định, không cần toggle)
 function onComposerKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') { rootDraft.value = ''; return; }
-  if (e.key !== 'Enter') return;
-  if (enterToSave.value) {
-    if (e.shiftKey) return;
-    e.preventDefault();
-    void submitRoot();
-  } else if (e.ctrlKey || e.metaKey) {
-    e.preventDefault();
-    void submitRoot();
-  }
+  if (e.key !== 'Enter' || e.shiftKey) return;
+  e.preventDefault();
+  void submitRoot();
 }
 function onReplyKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') { cancelReply(); return; }
-  if (e.key !== 'Enter') return;
-  if (enterToSave.value) {
-    if (e.shiftKey) return;
-    e.preventDefault();
-    void submitReply();
-  } else if (e.ctrlKey || e.metaKey) {
-    e.preventDefault();
-    void submitReply();
-  }
+  if (e.key !== 'Enter' || e.shiftKey) return;
+  e.preventDefault();
+  void submitReply();
 }
 async function submitRoot() {
   if (!rootDraft.value.trim()) return;
@@ -519,21 +492,6 @@ defineExpose({ rootCount: rootNoteCount });
 }
 .settings-btn:hover { background: var(--smax-primary-soft); color: var(--smax-primary); }
 
-.tl-subbar {
-  display: flex;
-  justify-content: flex-end;
-  padding: 0 4px;
-}
-.enter-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 10px;
-  color: var(--smax-grey-600);
-  cursor: pointer;
-  user-select: none;
-}
-
 .settings-dropdown {
   background: #fff;
   border-radius: 10px;
@@ -614,6 +572,20 @@ defineExpose({ rootCount: rootNoteCount });
   min-height: 22px;
   max-height: 120px;
   padding: 4px 0;
+  white-space: nowrap;        /* placeholder không wrap */
+  overflow-x: hidden;
+  text-overflow: ellipsis;
+}
+.note-input::placeholder {
+  color: var(--smax-grey-400, #b0b8c1);   /* mờ rõ ràng */
+  font-style: italic;
+  opacity: 1;                              /* override browser default */
+}
+/* Khi user gõ text → bỏ nowrap để xuống dòng bình thường */
+.note-input:focus,
+.note-input:not(:placeholder-shown) {
+  white-space: pre-wrap;
+  overflow-x: visible;
 }
 .send-btn {
   flex-shrink: 0;
