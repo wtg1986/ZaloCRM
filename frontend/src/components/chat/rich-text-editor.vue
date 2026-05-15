@@ -190,11 +190,13 @@ onBeforeUnmount(() => { editor.value?.destroy(); });
   background: var(--smax-grey-50, #fafbfc);
 }
 
-/* Editor content height: 60px ~ Zalo Web compose (2 dòng visible).
- * Fixed height, scroll bên trong nếu user nhập nhiều. */
+/* Editor content: auto-grow theo nội dung (min 60px ~ 2 dòng Zalo Web).
+ * Max-height kế thừa từ parent .input-area (CSS variable --editor-max-h),
+ * scroll bên trong nếu vượt. Mặc định 320px cho an toàn. */
 .editor-content :deep(.tiptap-input) {
   padding: 8px 13px;
-  height: 60px;
+  min-height: 60px;
+  max-height: var(--editor-max-h, 320px);
   overflow-y: auto;
   outline: none;
   font-size: 14px;

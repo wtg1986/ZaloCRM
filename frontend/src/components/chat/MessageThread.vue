@@ -307,7 +307,13 @@
           <span class="toolbar-divider"></span>
 
           <!-- Group 3: Productivity -->
-          <button class="icon-tool" title="Tạo nhắc hẹn" @click="todoToast('Nhắc hẹn')">
+          <button
+            class="icon-tool"
+            :class="{ active: showAppointmentDialog }"
+            title="Tạo nhắc hẹn cho KH này"
+            :disabled="!conversation.contact"
+            @click="showAppointmentDialog = true"
+          >
             <v-icon size="18">mdi-calendar-clock</v-icon>
           </button>
           <button class="icon-tool" title="Template tin nhắn (gõ /)" @click="openTemplatePopup">
@@ -319,18 +325,23 @@
         </div>
 
         <div class="input-row">
-          <div class="editor-wrap">
-            <!-- Avatar nick đang gửi — TOP-LEFT của editor (overlay, Zalo Web style) -->
+          <!-- Avatar nick đang gửi — OUTSIDE editor (góc trái), halo gradient cam-đỏ-vàng -->
+          <div
+            v-if="conversation.zaloAccount"
+            class="nick-avatar-halo"
+            :title="`Tin nhắn này được gửi đi từ ${conversation.zaloAccount.displayName || 'nick Zalo'}`"
+          >
             <Avatar
-              v-if="conversation.zaloAccount"
               :src="conversation.zaloAccount.avatarUrl"
               :name="conversation.zaloAccount.displayName || 'Nick'"
-              :size="22"
+              :size="36"
               :gradient-seed="conversation.zaloAccount.id"
               platform="zalo"
-              :title="`Đang gửi từ nick: ${conversation.zaloAccount.displayName || ''}`"
               class="sender-nick-avatar"
             />
+          </div>
+
+          <div class="editor-wrap">
             <QuickTemplatePopup
               :visible="showTemplatePopup"
               :query="templateQuery"
@@ -344,7 +355,7 @@
               v-model="inputText"
               :placeholder="inputPlaceholder"
               :show-toolbar="formatBarVisible"
-              class="input-editor with-nick-avatar"
+              class="input-editor"
               @submit="handleSend"
               @typing="onTypingEvent"
               @paste-image="onPasteImage"
@@ -359,6 +370,15 @@
             <v-icon v-else size="20">mdi-send</v-icon>
           </button>
         </div>
+
+        <!-- Appointment quick-create dialog (dùng chung với NotesSection cột 4) -->
+        <AppointmentQuickDialog
+          v-model="showAppointmentDialog"
+          :contact-id="conversation.contact?.id ?? null"
+          :contact-name="conversation.contact?.fullName ?? null"
+          header="📅 Tạo nhắc hẹn"
+          @created="onAppointmentCreated"
+        />
 
         <!-- Hidden file inputs cho upload ảnh / file -->
         <input
@@ -446,6 +466,7 @@ import ReplyPreviewBar from '@/components/chat/reply-preview-bar.vue';
 import ForwardDialog from '@/components/chat/forward-dialog.vue';
 import RichTextEditor from '@/components/chat/rich-text-editor.vue';
 import TagCrmBar from '@/components/chat/TagCrmBar.vue';
+import AppointmentQuickDialog from '@/components/chat/AppointmentQuickDialog.vue';
 import { useToast } from '@/composables/use-toast';
 import { groupAvatarStore } from '@/composables/use-group-avatar-cache';
 
@@ -987,6 +1008,13 @@ function toggleFormat() {
   if (formatBarVisible.value) editorRef.value?.focus();
 }
 
+// ── Appointment quick-create từ icon 📅 trong toolbar — đồng bộ flow với cột 4.
+const showAppointmentDialog = ref(false);
+function onAppointmentCreated() {
+  // Notify parent reload conversation count + có thể mở Activity tab
+  emit('refresh-thread');
+}
+
 // ── Display item types (album grouping + date dividers) ─────────────────────
 type DisplayItem =
   | { kind: 'single'; key: string; msg: Message }
@@ -1502,15 +1530,27 @@ watch(() => props.editingMessage?.id, async (id) => {
 }
 
 /* ════════ Input area ════════
- * Fixed-height layout — không auto-resize theo content. Tránh nhảy layout khi
- * switch conversation hoặc khi user nhập nhiều dòng (editor scroll bên trong). */
+ * Auto-grow theo content: editor expand khi user nhập nhiều dòng.
+ * BỊ CHẶN ở 45% chiều cao của .message-thread (column 3) → message list luôn
+ * còn tối thiểu 55%. Editor max-height computed: container 45% - chrome (~110px)
+ * cho tag bar + outer toolbar + send row + padding. Đảm bảo không che message list. */
 .input-area {
   background: var(--smax-bg);
   border-top: 1px solid var(--smax-grey-200);
   padding: 7px 13px 9px;
   flex-shrink: 0;
   flex-grow: 0;
-  /* Reserved space: toolbar 32 + editor 84 + outer toolbar 38 + reply bar (when present) ~30 + padding */
+  max-height: 45%;          /* Cap 45% chiều cao của .message-thread */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* Truyền max-height cho editor: 45% .message-thread - 110px chrome = available */
+  --editor-max-h: calc(45dvh - 130px);
+}
+/* Editor content area chiếm phần còn lại trong .input-area */
+.input-area .input-row {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .input-toolbar-top {
   display: flex;
@@ -1565,20 +1605,56 @@ watch(() => props.editingMessage?.id, async (id) => {
   flex: 1; min-width: 0;
   position: relative;
 }
-/* Avatar nick — overlay top-left của editor box (Zalo Web style) */
-.sender-nick-avatar {
-  position: absolute;
-  top: 6px;
-  left: 8px;
-  z-index: 3;
-  pointer-events: auto;
-  box-shadow: 0 0 0 2px var(--smax-bg, #fff);  /* viền trắng tách khỏi editor border */
+.input-editor { width: 100%; }
+
+/* ── Avatar nick halo: gradient cam-đỏ-vàng đậm xoay quanh avatar ───────
+ * Inspired Instagram Stories halo. Conic-gradient rotate 3s linear infinite.
+ * Avatar bên trong 36px, halo ring 42px (padding 3px tạo viền).
+ * Hover: tăng speed + brightness để feedback. */
+.nick-avatar-halo {
+  flex-shrink: 0;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  padding: 3px;
+  background: conic-gradient(
+    from var(--halo-angle, 0deg),
+    #ef6c00 0%,        /* cam đậm */
+    #c62828 25%,       /* đỏ đậm */
+    #f9a825 50%,       /* vàng đậm */
+    #ef6c00 75%,
+    #c62828 100%
+  );
+  animation: haloSpin 3s linear infinite;
+  margin-bottom: 4px;  /* căn đáy với editor (60px → 42px lệch 18px / 2 ≈ 4px) */
+  cursor: help;
+  transition: filter 0.18s;
+}
+.nick-avatar-halo:hover {
+  filter: brightness(1.12) saturate(1.2);
+  animation-duration: 1.8s;
+}
+.nick-avatar-halo .sender-nick-avatar {
+  display: block;
+  border: 2px solid var(--smax-bg, #fff);
   border-radius: 50%;
 }
-.input-editor { width: 100%; }
-/* Khi có avatar overlay → text input cần thụt vào tránh đè avatar */
-.input-editor.with-nick-avatar :deep(.tiptap-input) {
-  padding-left: 38px !important;
+@property --halo-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes haloSpin {
+  to { --halo-angle: 360deg; }
+}
+/* Fallback nếu trình duyệt không hỗ trợ @property — dùng rotate transform */
+@supports not (background: conic-gradient(from 0deg, red, blue)) {
+  .nick-avatar-halo {
+    animation: haloRotate 3s linear infinite;
+  }
+  @keyframes haloRotate {
+    to { transform: rotate(360deg); }
+  }
 }
 
 .send-btn {
