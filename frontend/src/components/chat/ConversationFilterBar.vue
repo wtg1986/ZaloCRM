@@ -130,30 +130,30 @@ function toggleSort() {
   align-items: center;
 }
 
-/* Pill: flex 1 1 0 chia đều 4 cột, soft button, gentle color khi active */
+/* Pill: 2-line layout (label trên, count dưới) — fit gọn trong ~76px/pill
+   Cách này tránh ellipsis label "Chưa đọc" → "Ch..." khi cột 2 hẹp. */
 .pill {
   flex: 1 1 0;
   min-width: 0;
-  display: inline-flex;
+  display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  padding: 5px 6px;
-  border-radius: 12px;
-  font-size: 11px;
+  gap: 1px;
+  padding: 5px 4px 4px;
+  border-radius: 10px;
   font-weight: 500;
   cursor: pointer;
   transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
   border: 1px solid #E5E7EB;
   background: white;
   color: #4B5563;
-  white-space: nowrap;
-  overflow: hidden;
   font-family: inherit;
+  line-height: 1.2;
 }
 .pill .pill-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 10.5px;
+  white-space: nowrap;
 }
 .pill:hover {
   background: #FAFBFC;
@@ -191,23 +191,20 @@ function toggleSort() {
 }
 
 /* Count: fixed slot, monospace tiny, always visible */
+/* Count dưới label (2-line layout) — compact, đậm */
 .pill .count {
-  background: #F3F4F6;
   color: #6B7280;
-  padding: 1px 5px;
-  border-radius: 6px;
-  font-size: 9.5px;
+  font-size: 11px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  min-width: 18px;
-  text-align: center;
-  flex-shrink: 0;
-  transition: background-color 0.18s ease, color 0.18s ease;
+  line-height: 1.1;
+  transition: color 0.18s ease;
 }
-.pill.alert.active .count { background: rgba(220, 38, 38, 0.12); color: #B91C1C; }
-.pill.warning.active .count { background: rgba(245, 158, 11, 0.15); color: #B45309; }
-.pill.danger.active .count { background: rgba(239, 68, 68, 0.12); color: #B91C1C; }
-.pill.success.active .count { background: rgba(16, 185, 129, 0.12); color: #047857; }
+/* Active state: count inherit accent color (không cần background — 2-line clean) */
+.pill.alert.active .count { color: #B91C1C; }
+.pill.warning.active .count { color: #B45309; }
+.pill.danger.active .count { color: #B91C1C; }
+.pill.success.active .count { color: #047857; }
 
 /* ② Main Tab style — 4 tabs prominent, fix size, KHÔNG count */
 .cfb-tabs.main-tab-style {
