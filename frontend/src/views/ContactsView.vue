@@ -748,7 +748,7 @@ useFriendSocket((payload: FriendUpdatedPayload) => {
   // tự rebuild).
   for (const [k, v] of Object.entries(payload.patch)) {
     if (k in row) {
-      (row as Record<string, unknown>)[k] = v;
+      (row as unknown as Record<string, unknown>)[k] = v;
     }
   }
 });
