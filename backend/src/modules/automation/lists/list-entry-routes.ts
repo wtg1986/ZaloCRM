@@ -60,7 +60,11 @@ export async function customerListEntryRoutes(app: FastifyInstance): Promise<voi
     } else if (tab === 'has_zalo') {
       where.hasZalo = true;
     } else if (tab === 'no_zalo') {
-      where.hasZalo = false;
+      // v1 semantic: "Chưa quét SDK" = đã check Friend (status='enriched') nhưng
+      // không match (hasZalo=null). Tab name vẫn 'no_zalo' để compat URL, UI label
+      // hiển thị "Chưa quét SDK".
+      where.hasZalo = null;
+      where.status = 'enriched';
     }
     // tab === 'all' → no filter
 
@@ -264,9 +268,17 @@ export async function recomputeListCounters(listId: string): Promise<void> {
         valid += count;
         break;
     }
+    // hasZalo counter semantic:
+    //   true  → đã CONFIRM có Zalo (match Friend HOẶC SDK lookup trả OK)
+    //   false → CHỈ Phase 7 Campaign SDK confirm "phone này không có Zalo"
+    //   null  → chưa biết / chưa quét SDK (kể cả status='enriched' đã check Friend)
     if (g.hasZalo === true) hasZalo += count;
     else if (g.hasZalo === false) noZalo += count;
-    else if (g.status !== 'invalid') pendingLookup += count;
+    // Pending = entries chưa được worker visit Friend table (status='validated').
+    // Entries hasZalo=null + status='enriched' nghĩa là worker đã check Friend xong
+    // nhưng KHÔNG match — cần Campaign SDK scan để biết chắc → KHÔNG count vào pending.
+    // → List auto-promote done sau khi worker xử lý xong tất cả entry.
+    if (g.status === 'validated') pendingLookup += count;
   }
 
   await prisma.customerList.update({

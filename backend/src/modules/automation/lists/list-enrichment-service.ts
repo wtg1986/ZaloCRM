@@ -143,12 +143,14 @@ async function enrichListOnce(listId: string): Promise<{ processed: number; enri
         });
         enriched++;
       } else {
-        // No friend match → hasZalo=false (KH này chưa từng được nick nào trong org add friend)
-        // Future: nếu sale chủ động scan via campaign, action handler sẽ override
+        // Không match Friend table → mark `enriched` (đã check Friend xong) nhưng
+        // GIỮ hasZalo=null vì chưa biết thực sự có Zalo hay không.
+        // Chỉ Phase 7 Campaign action handler (request-friend qua SDK) mới
+        // có thẩm quyền set hasZalo=false khi Zalo trả 404.
         await prisma.customerListEntry.update({
           where: { id: entry.id },
           data: {
-            hasZalo: false,
+            hasZalo: null,
             status: 'enriched',
             enrichedAt: new Date(),
           },

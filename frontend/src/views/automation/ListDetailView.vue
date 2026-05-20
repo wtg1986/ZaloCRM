@@ -111,6 +111,7 @@
           class="hero-stat blue"
           :class="{ active: entryTab === 'has_zalo' }"
           @click="setTab('has_zalo')"
+          title="Đã match Friend table hoặc SDK lookup xác nhận có Zalo"
         >
           <div class="l">Có Zalo</div>
           <div class="v">{{ currentList.hasZaloEntries.toLocaleString('vi-VN') }}</div>
@@ -120,10 +121,11 @@
           class="hero-stat"
           :class="{ active: entryTab === 'no_zalo' }"
           @click="setTab('no_zalo')"
+          title="Đã check Friend table xong nhưng không match. Chưa biết chắc — cần Campaign SDK scan."
         >
-          <div class="l">Không Zalo</div>
-          <div class="v">{{ currentList.noZaloEntries.toLocaleString('vi-VN') }}</div>
-          <div class="pct">{{ pct(currentList.noZaloEntries, currentList.validEntries) }}% / hợp lệ</div>
+          <div class="l">Chưa quét SDK</div>
+          <div class="v">{{ notScannedSdk.toLocaleString('vi-VN') }}</div>
+          <div class="pct">cần Campaign quét xác nhận</div>
         </div>
       </div>
     </div>
@@ -154,8 +156,8 @@
       <button class="subtab" :class="{ active: entryTab === 'has_zalo' }" @click="setTab('has_zalo')">
         📱 Có Zalo <span class="count">{{ currentList?.hasZaloEntries ?? 0 }}</span>
       </button>
-      <button class="subtab" :class="{ active: entryTab === 'no_zalo' }" @click="setTab('no_zalo')">
-        ⊘ Không Zalo <span class="count">{{ currentList?.noZaloEntries ?? 0 }}</span>
+      <button class="subtab" :class="{ active: entryTab === 'no_zalo' }" @click="setTab('no_zalo')" title="Đã check Friend xong, chưa biết Zalo — cần Campaign SDK scan">
+        ❓ Chưa quét SDK <span class="count">{{ notScannedSdk }}</span>
       </button>
     </div>
 
@@ -345,6 +347,18 @@ const {
 
 const listId = computed(() => route.params.id as string);
 
+/**
+ * notScannedSdk = entries valid - hasZalo - dup(3) - skipped
+ * = entries đã enriched (worker check Friend xong) nhưng chưa match → chờ Campaign SDK scan.
+ * v1: noZaloEntries luôn = 0 (chưa có SDK confirm), nên dùng computed này thay thế.
+ */
+const notScannedSdk = computed<number>(() => {
+  const l = currentList.value;
+  if (!l) return 0;
+  const dupTotal = l.dupInListEntries + l.dupCrossListEntries + l.dupWithContactEntries;
+  return Math.max(0, l.validEntries - l.hasZaloEntries - l.noZaloEntries - dupTotal);
+});
+
 onMounted(async () => {
   await fetchListById(listId.value);
   await fetchEntries(listId.value);
@@ -459,6 +473,8 @@ function statusPillClass(status: string, hasZalo: boolean | null): string {
   if (status.startsWith('dup_')) return 'dup';
   if (hasZalo === true) return 'has-zalo';
   if (hasZalo === false) return 'no-zalo';
+  // hasZalo=null + status=enriched → "Chưa quét SDK" (worker đã check Friend nhưng không match)
+  if (status === 'enriched' && hasZalo === null) return 'pending';
   return 'pending';
 }
 
@@ -470,6 +486,8 @@ function statusPillLabel(status: string, hasZalo: boolean | null): string {
   if (status === 'skipped') return '⏭ Đã skip';
   if (hasZalo === true) return '✓ Có Zalo';
   if (hasZalo === false) return '⊘ Không Zalo';
+  // hasZalo=null branch
+  if (status === 'enriched') return '❓ Chưa quét SDK';
   return '⏳ Đang quét';
 }
 
