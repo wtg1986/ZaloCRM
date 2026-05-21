@@ -159,39 +159,200 @@ const grouped = computed(() => {
 </script>
 
 <style scoped>
-.apt-list { padding: 12px 20px 24px; overflow-y: auto; height: 100%; background: #f5f7fb; }
-.empty { background: #fff; border: 1px dashed #cdd4df; border-radius: 12px; padding: 48px 24px; text-align: center; color: #5b6573; }
-.empty-icon { font-size: 36px; }
-.empty h3 { margin: 8px 0 4px; color: #1a2433; }
-.empty-btn { margin-top: 12px; padding: 8px 16px; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; background: #2f6ee5; color: #fff; }
-.group { margin-bottom: 18px; }
-.group h3 { font-size: 13px; color: #5b6573; margin: 0 0 8px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
-.group h3 .badge { background: #fff; border: 1px solid #e4e8ef; padding: 1px 8px; border-radius: 10px; font-size: 11px; }
-.row { display: grid; grid-template-columns: 80px 1fr 200px 130px 130px 110px 88px; align-items: center; gap: 12px; background: #fff; border: 1px solid #e4e8ef; border-left: 4px solid transparent; border-radius: 10px; padding: 10px 12px; margin-bottom: 6px; cursor: pointer; }
-.row:hover { box-shadow: 0 4px 14px rgba(0,0,0,.06); border-color: #cdd4df; }
-.time { font-weight: 700; font-size: 14px; }
-.time .dur { font-size: 10px; color: #8d96a4; font-weight: 500; display: block; }
-.customer { display: flex; align-items: center; gap: 10px; }
-.customer .av { width: 36px; height: 36px; border-radius: 50%; color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 13px; flex-shrink: 0; }
-.customer .info .name { font-weight: 600; }
-.customer .info .zalo-tag { font-size: 10px; }
-.customer .info .sub { font-size: 11px; color: #8d96a4; }
-.source { font-size: 12px; color: #5b6573; display: flex; align-items: center; gap: 6px; }
-.src-icon { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; font-size: 11px; font-weight: 800; color: #fff; }
-.src-icon.zalo { background: #0068ff; }
-.src-icon.manual { background: #64748b; }
-.pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; }
-.pill.type { background: #f1f5f9; color: #475569; }
-.pill.status-scheduled { background: #e8f0fe; color: #2f6ee5; }
-.pill.status-overdue { background: #fef3c7; color: #d97706; }
-.pill.status-completed { background: #dcfce7; color: #16a34a; }
-.pill.status-cancelled { background: #f1f5f9; color: #64748b; }
-.pill.status-no_show { background: #fee2e2; color: #dc2626; }
-.owner { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-.av-mini { width: 22px; height: 22px; border-radius: 50%; color: #fff; display: grid; place-items: center; font-size: 10px; font-weight: 700; }
+@import '@/components/automation/phase7/airtable.css';
+
+.apt-list {
+  padding: var(--at-s-md) var(--at-s-xl) var(--at-s-lg);
+  overflow-y: auto;
+  height: 100%;
+  background: var(--at-canvas);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  color: var(--at-body);
+}
+
+/* Empty state — cream callout */
+.empty {
+  background: var(--at-cream);
+  border-radius: var(--at-r-lg);
+  padding: var(--at-s-xxl) var(--at-s-lg);
+  text-align: center;
+  color: var(--at-ink);
+}
+.empty-icon { font-size: 36px; margin-bottom: var(--at-s-xs); }
+.empty h3 {
+  margin: var(--at-s-xs) 0 var(--at-s-xxs);
+  color: var(--at-ink);
+  font-size: 18px;
+  font-weight: 500;
+}
+.empty p { color: var(--at-body); font-size: 13.5px; margin: 0; }
+.empty-btn {
+  margin-top: var(--at-s-md);
+  padding: 10px 18px;
+  border: none;
+  border-radius: var(--at-r-lg);
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 13px;
+  background: var(--at-ink);
+  color: var(--at-on-primary);
+  font-family: inherit;
+}
+.empty-btn:active { background: var(--at-primary-active); }
+
+/* Day group */
+.group { margin-bottom: var(--at-s-lg); }
+.group h3 {
+  font-size: 11.5px;
+  color: var(--at-muted);
+  margin: 0 0 var(--at-s-xs);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  display: flex;
+  align-items: center;
+  gap: var(--at-s-xs);
+}
+.group h3 .badge {
+  background: var(--at-canvas);
+  border: 1px solid var(--at-hairline);
+  padding: 1px 8px;
+  border-radius: var(--at-r-pill);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--at-ink);
+}
+
+/* List row — Airtable card style */
+.row {
+  display: grid;
+  grid-template-columns: 80px 1fr 200px 130px 130px 110px 88px;
+  align-items: center;
+  gap: var(--at-s-sm);
+  background: var(--at-canvas);
+  border: 1px solid var(--at-hairline);
+  border-left: 4px solid transparent;
+  border-radius: var(--at-r-md);
+  padding: 10px var(--at-s-sm);
+  margin-bottom: 6px;
+  cursor: pointer;
+  transition: background 0.1s, box-shadow 0.1s;
+}
+.row:active { background: var(--at-surface-soft); }
+
+.time {
+  font-weight: 500;
+  font-size: 14px;
+  color: var(--at-ink);
+  font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+}
+.time .dur {
+  font-size: 10px;
+  color: var(--at-muted);
+  font-weight: 500;
+  display: block;
+  margin-top: 1px;
+}
+
+.customer { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.customer .av {
+  width: 32px; height: 32px;
+  border-radius: var(--at-r-pill);
+  color: var(--at-on-primary);
+  display: grid; place-items: center;
+  font-weight: 500;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.customer .info { min-width: 0; }
+.customer .info .name {
+  font-weight: 500;
+  color: var(--at-ink);
+  font-size: 13.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.customer .info .zalo-tag {
+  font-size: 10px;
+  color: var(--at-muted);
+  letter-spacing: 0.06em;
+}
+.customer .info .sub {
+  font-size: 11.5px;
+  color: var(--at-muted);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Source col */
+.source {
+  font-size: 12px;
+  color: var(--at-body);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.src-icon {
+  width: 22px; height: 22px;
+  border-radius: var(--at-r-sm);
+  display: grid; place-items: center;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--at-on-primary);
+  flex-shrink: 0;
+}
+.src-icon.zalo   { background: var(--at-link); }
+.src-icon.manual { background: var(--at-muted); }
+
+/* Pills — Airtable signature tints */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  border-radius: var(--at-r-pill);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.16px;
+  white-space: nowrap;
+}
+.pill.type { background: var(--at-surface-soft); color: var(--at-body); border: 1px solid var(--at-hairline); }
+.pill.status-scheduled { background: #fdf0e3; color: #7a4115; }    /* peach tint */
+.pill.status-overdue   { background: #fdf3df; color: #7a5818; }    /* mustard tint */
+.pill.status-completed { background: #e3ede4; color: #0a2e0e; }    /* forest tint */
+.pill.status-cancelled { background: var(--at-surface-strong); color: var(--at-muted); text-decoration: line-through; }
+.pill.status-no_show   { background: #fbe6dc; color: #7a2000; }    /* coral tint */
+
+/* Owner col */
+.owner { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--at-body); }
+.av-mini {
+  width: 22px; height: 22px;
+  border-radius: var(--at-r-pill);
+  color: var(--at-on-primary);
+  display: grid; place-items: center;
+  font-size: 10px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+/* Actions */
 .actions { display: flex; gap: 4px; justify-content: flex-end; }
-.actions button { width: 28px; height: 28px; border-radius: 6px; border: 1px solid #e4e8ef; background: #fff; color: #5b6573; cursor: pointer; }
-.actions button:hover { background: #f5f7fb; color: #1a2433; }
+.actions button {
+  width: 28px; height: 28px;
+  border-radius: var(--at-r-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--at-body);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 14px;
+}
+.actions button:active { background: var(--at-surface-soft); border-color: var(--at-hairline); }
 
 @media (max-width: 1100px) {
   .row { grid-template-columns: 70px 1fr 130px 120px 110px 90px 80px; gap: 8px; }

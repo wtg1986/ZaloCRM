@@ -204,32 +204,167 @@ function onSlotClick(date: Date, hour: number, minute: number) {
 </script>
 
 <style scoped>
-.apt-week { display: grid; grid-template-rows: auto 1fr; height: 100%; background: #fff; }
-.cal-head { display: grid; grid-template-columns: 60px repeat(7, 1fr); border-bottom: 1px solid #e4e8ef; }
-.cal-head .corner { border-right: 1px solid #e4e8ef; }
-.cal-head .dcol { padding: 8px 6px; border-right: 1px solid #e4e8ef; text-align: center; }
-.cal-head .dcol.today { background: #e8f0fe; }
-.cal-head .dcol .dow { font-size: 10px; text-transform: uppercase; color: #8d96a4; font-weight: 700; letter-spacing: .04em; }
-.cal-head .dcol .date { font-size: 18px; font-weight: 700; }
-.cal-head .dcol.today .date { color: #2f6ee5; }
-.cal-head .dcol .count { font-size: 10px; color: #8d96a4; margin-top: 1px; }
-.cal-body { position: relative; overflow-y: auto; display: grid; grid-template-columns: 60px repeat(7, 1fr); }
-.timecol { border-right: 1px solid #e4e8ef; }
-.timecol .slot { height: 48px; border-bottom: 1px solid #e4e8ef; font-size: 10px; color: #8d96a4; padding: 2px 6px; text-align: right; box-sizing: border-box; }
-.daycol { border-right: 1px solid #e4e8ef; position: relative; }
-.daycol .slot { height: 48px; border-bottom: 1px solid #e4e8ef; cursor: pointer; position: relative; }
-.daycol .slot:hover { background: #f9fafc; }
-.daycol .slot .halfslot { position: absolute; left: 0; right: 0; bottom: 0; height: 50%; border-top: 1px dashed #e4e8ef; }
-.daycol .slot .halfslot:hover { background: rgba(47,110,229,.06); }
-.daycol.today { background: rgba(47, 110, 229, 0.025); }
-.event { position: absolute; border-radius: 6px; padding: 3px 6px; font-size: 11px; line-height: 1.2; color: #fff; cursor: pointer; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,.08); border-left: 3px solid rgba(255,255,255,.4); }
-.event:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,.15); z-index: 5; }
-.event .ev-time { font-weight: 700; font-size: 10px; opacity: .9; }
-.event .ev-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.event .ev-meta { font-size: 10px; opacity: .85; }
-.event.striped { background-image: repeating-linear-gradient(45deg, rgba(0,0,0,0), rgba(0,0,0,0) 6px, rgba(0,0,0,.18) 6px, rgba(0,0,0,.18) 12px) !important; }
-.event.state-completed { opacity: .55; }
-.event.state-cancelled { opacity: .5; text-decoration: line-through; }
-.nowline { position: absolute; left: 0; right: 0; height: 2px; background: #dc2626; z-index: 4; pointer-events: none; }
-.nowline::before { content: ""; position: absolute; left: -4px; top: -4px; width: 10px; height: 10px; border-radius: 50%; background: #dc2626; }
+@import '@/components/automation/phase7/airtable.css';
+
+.apt-week {
+  display: grid; grid-template-rows: auto 1fr;
+  height: 100%;
+  background: var(--at-canvas);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* Day header row */
+.cal-head {
+  display: grid;
+  grid-template-columns: 60px repeat(7, 1fr);
+  border-bottom: 1px solid var(--at-hairline);
+}
+.cal-head .corner { border-right: 1px solid var(--at-hairline); }
+.cal-head .dcol {
+  padding: var(--at-s-sm) var(--at-s-xs);
+  border-right: 1px solid var(--at-hairline);
+  text-align: center;
+  background: var(--at-canvas);
+}
+.cal-head .dcol .dow {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  color: var(--at-muted);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+}
+.cal-head .dcol .date {
+  font-size: 20px;
+  font-weight: 400;
+  color: var(--at-ink);
+  line-height: 1;
+  margin-top: 2px;
+}
+.cal-head .dcol.today .dow { color: var(--at-coral); }
+.cal-head .dcol.today .date {
+  display: inline-flex;
+  align-items: center; justify-content: center;
+  width: 32px; height: 32px;
+  background: var(--at-ink);
+  color: var(--at-on-primary);
+  border-radius: var(--at-r-pill);
+  font-size: 16px;
+  font-weight: 500;
+}
+.cal-head .dcol .count {
+  font-size: 10px;
+  color: var(--at-muted);
+  margin-top: 2px;
+  font-weight: 500;
+}
+
+/* Body grid */
+.cal-body {
+  position: relative;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: 60px repeat(7, 1fr);
+  background: var(--at-canvas);
+}
+
+/* Time column */
+.timecol { border-right: 1px solid var(--at-hairline); }
+.timecol .slot {
+  height: 48px;
+  border-bottom: 1px solid var(--at-hairline);
+  font-size: 10.5px;
+  color: var(--at-muted);
+  padding: 2px 6px;
+  text-align: right;
+  font-weight: 500;
+  font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+  box-sizing: border-box;
+}
+
+/* Day columns */
+.daycol {
+  border-right: 1px solid var(--at-hairline);
+  position: relative;
+}
+.daycol .slot {
+  height: 48px;
+  border-bottom: 1px solid var(--at-hairline);
+  cursor: pointer;
+  position: relative;
+}
+.daycol .slot:active { background: var(--at-surface-soft); }
+.daycol .slot .halfslot {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 50%;
+  border-top: 1px dashed var(--at-hairline);
+}
+.daycol .slot .halfslot:active { background: rgba(170,45,0,0.04); }
+.daycol.today { background: rgba(170,45,0,0.018); }
+
+/* Event card — Airtable signature accents */
+.event {
+  position: absolute;
+  border-radius: var(--at-r-sm);
+  padding: 5px 8px;
+  font-size: 11px;
+  line-height: 1.3;
+  cursor: pointer;
+  overflow: hidden;
+  border-left: 3px solid;
+  background: var(--at-canvas);
+  box-shadow: 0 1px 3px rgba(24,29,38,0.06);
+  color: var(--at-ink);
+}
+.event:active { transform: translateY(1px); }
+.event .ev-time {
+  font-weight: 500;
+  font-size: 10px;
+  color: var(--at-muted);
+  letter-spacing: 0.06em;
+}
+.event .ev-title {
+  font-weight: 500;
+  font-size: 11.5px;
+  color: var(--at-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
+}
+.event .ev-meta {
+  font-size: 10.5px;
+  color: var(--at-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.event.striped {
+  background-image: repeating-linear-gradient(45deg, transparent, transparent 6px, rgba(24,29,38,0.06) 6px, rgba(24,29,38,0.06) 12px) !important;
+}
+.event.state-completed { opacity: 0.55; }
+.event.state-completed .ev-title { text-decoration: line-through; }
+.event.state-cancelled {
+  opacity: 0.5;
+  background: var(--at-surface-soft) !important;
+  border-left-color: var(--at-border-strong) !important;
+}
+.event.state-cancelled .ev-title { text-decoration: line-through; color: var(--at-muted); }
+
+/* Now line — coral instead of red */
+.nowline {
+  position: absolute; left: 0; right: 0;
+  height: 2px;
+  background: var(--at-coral);
+  z-index: 4;
+  pointer-events: none;
+}
+.nowline::before {
+  content: "";
+  position: absolute;
+  left: -5px; top: -5px;
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: var(--at-coral);
+}
 </style>

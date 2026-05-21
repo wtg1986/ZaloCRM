@@ -172,7 +172,13 @@ function formatRelative(iso: string): string {
 </script>
 
 <style scoped>
-.panel-overlay { position: fixed; inset: 0; background: rgba(15,20,25,.18); z-index: 49; }
+@import '@/components/automation/phase7/airtable.css';
+
+.panel-overlay {
+  position: fixed; inset: 0;
+  background: rgba(24,29,38,0.22);
+  z-index: 49;
+}
 .apt-panel {
   position: fixed;
   top: var(--smax-topnav-h, 52px);
@@ -180,64 +186,237 @@ function formatRelative(iso: string): string {
   bottom: 0;
   width: 420px;
   max-width: 100vw;
-  background: #fff;
-  border-left: 1px solid #e4e8ef;
-  box-shadow: -8px 0 30px rgba(0,0,0,.08);
+  background: var(--at-canvas);
+  border-left: 1px solid var(--at-hairline);
+  box-shadow: -16px 0 40px rgba(24,29,38,0.12);
   transform: translateX(100%);
-  transition: transform .25s ease;
+  transition: transform .22s ease;
   display: flex;
   flex-direction: column;
   z-index: 50;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  color: var(--at-body);
 }
 .apt-panel.open { transform: translateX(0); }
 
 @media (max-width: 768px) {
   .apt-panel { width: 100vw; top: 0; }
 }
-.panel-head { padding: 14px 18px; border-bottom: 1px solid #e4e8ef; display: flex; align-items: center; gap: 10px; }
-.panel-head .ev-color { width: 6px; height: 28px; border-radius: 3px; }
-.panel-head h3 { margin: 0; font-size: 15px; font-weight: 700; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.panel-head .close { background: transparent; border: none; font-size: 20px; color: #8d96a4; width: 28px; height: 28px; border-radius: 6px; cursor: pointer; }
-.panel-head .close:hover { background: #f5f7fb; }
-.panel-body { flex: 1; overflow-y: auto; padding: 16px 18px; }
-.panel-section { margin-bottom: 18px; }
-.panel-section h5 { font-size: 11px; text-transform: uppercase; color: #8d96a4; margin: 0 0 8px; letter-spacing: .04em; font-weight: 700; }
-.cust-card { background: #f9fafc; border: 1px solid #e4e8ef; border-radius: 10px; padding: 12px; display: flex; gap: 10px; align-items: center; }
-.cust-card .av { width: 44px; height: 44px; border-radius: 50%; color: #fff; display: grid; place-items: center; font-weight: 700; }
+
+/* Head: signature ribbon (4px) on top via .ev-color, then content */
+.panel-head {
+  padding: var(--at-s-md) var(--at-s-lg);
+  border-bottom: 1px solid var(--at-hairline);
+  display: flex;
+  align-items: center;
+  gap: var(--at-s-sm);
+}
+.panel-head .ev-color {
+  width: 4px;
+  height: 32px;
+  border-radius: 2px;
+}
+.panel-head h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--at-ink);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.panel-head .close {
+  background: transparent;
+  border: none;
+  font-size: 18px;
+  color: var(--at-muted);
+  width: 32px; height: 32px;
+  border-radius: var(--at-r-md);
+  cursor: pointer;
+  font-family: inherit;
+}
+.panel-head .close:active { background: var(--at-surface-soft); }
+
+.panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--at-s-lg);
+}
+.panel-section { margin-bottom: var(--at-s-lg); }
+.panel-section h5 {
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  color: var(--at-muted);
+  margin: 0 0 var(--at-s-xs);
+  letter-spacing: 0.08em;
+}
+
+/* Customer card — Airtable cream-ish surface */
+.cust-card {
+  background: var(--at-surface-soft);
+  border: 1px solid var(--at-hairline);
+  border-radius: var(--at-r-md);
+  padding: var(--at-s-sm);
+  display: flex;
+  gap: var(--at-s-sm);
+  align-items: center;
+}
+.cust-card .av {
+  width: 44px; height: 44px;
+  border-radius: var(--at-r-pill);
+  color: var(--at-on-primary);
+  display: grid; place-items: center;
+  font-weight: 500;
+  font-size: 16px;
+  flex-shrink: 0;
+}
 .cust-card .info { flex: 1; min-width: 0; }
-.cust-card .info .name { font-weight: 700; font-size: 14px; }
-.cust-card .info .sub { font-size: 12px; color: #5b6573; margin-top: 2px; }
+.cust-card .info .name {
+  font-weight: 500;
+  font-size: 15px;
+  color: var(--at-ink);
+}
+.cust-card .info .sub {
+  font-size: 12.5px;
+  color: var(--at-muted);
+  margin-top: 2px;
+}
+
 .actions-stack { display: flex; flex-direction: column; gap: 4px; }
-.actions-stack button { width: 32px; height: 32px; border-radius: 6px; border: 1px solid #e4e8ef; background: #fff; cursor: pointer; }
-.actions-stack button:hover { background: #e8f0fe; border-color: #2f6ee5; color: #2f6ee5; }
-.kv-row { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px dashed #e4e8ef; font-size: 13px; }
+.actions-stack button {
+  width: 32px; height: 32px;
+  border-radius: var(--at-r-sm);
+  border: 1px solid var(--at-hairline);
+  background: var(--at-canvas);
+  cursor: pointer;
+  color: var(--at-body);
+  font-family: inherit;
+}
+.actions-stack button:active { background: var(--at-surface-soft); }
+
+/* Key-value rows */
+.kv-row {
+  display: flex;
+  gap: var(--at-s-sm);
+  padding: var(--at-s-xs) 0;
+  border-bottom: 1px solid var(--at-hairline);
+  font-size: 13px;
+}
 .kv-row:last-child { border-bottom: none; }
-.kv-row .k { color: #8d96a4; width: 100px; flex-shrink: 0; font-size: 12px; }
-.kv-row .v { flex: 1; color: #1a2433; }
-.kv-row .v .link { color: #2f6ee5; text-decoration: none; font-size: 12px; }
-.pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; }
-.pill.type { background: #f1f5f9; color: #475569; }
-.pill.status-scheduled { background: #e8f0fe; color: #2f6ee5; }
-.pill.status-overdue { background: #fef3c7; color: #d97706; }
-.pill.status-completed { background: #dcfce7; color: #16a34a; }
-.pill.status-cancelled { background: #f1f5f9; color: #64748b; }
-.pill.status-no_show { background: #fee2e2; color: #dc2626; }
-.av-mini { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; color: #fff; font-size: 9px; font-weight: 700; margin-right: 4px; vertical-align: middle; }
+.kv-row .k {
+  color: var(--at-muted);
+  width: 100px;
+  flex-shrink: 0;
+  font-size: 11.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding-top: 2px;
+}
+.kv-row .v {
+  flex: 1;
+  color: var(--at-ink);
+  line-height: 1.5;
+}
+.kv-row .v .link {
+  color: var(--at-link);
+  text-decoration: none;
+  font-size: 12.5px;
+}
+
+/* Pills — Airtable signature tints */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: var(--at-r-pill);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.16px;
+}
+.pill.type { background: var(--at-surface-soft); color: var(--at-body); border: 1px solid var(--at-hairline); }
+.pill.status-scheduled { background: #fdf0e3; color: #7a4115; }
+.pill.status-overdue   { background: #fdf3df; color: #7a5818; }
+.pill.status-completed { background: #e3ede4; color: #0a2e0e; }
+.pill.status-cancelled { background: var(--at-surface-strong); color: var(--at-muted); text-decoration: line-through; }
+.pill.status-no_show   { background: #fbe6dc; color: #7a2000; }
+
+.av-mini {
+  display: inline-grid;
+  place-items: center;
+  width: 18px; height: 18px;
+  border-radius: var(--at-r-pill);
+  color: var(--at-on-primary);
+  font-size: 9px;
+  font-weight: 500;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+/* Timeline */
 .timeline { position: relative; padding-left: 24px; }
-.timeline::before { content: ""; position: absolute; left: 8px; top: 4px; bottom: 4px; width: 2px; background: #e4e8ef; }
-.tl-item { position: relative; padding: 4px 0 12px; font-size: 12px; }
-.tl-item::before { content: ""; position: absolute; left: -24px; top: 7px; width: 12px; height: 12px; border-radius: 50%; background: #fff; border: 2px solid #2f6ee5; }
-.tl-item.done::before { background: #16a34a; border-color: #16a34a; }
-.tl-item .when { color: #8d96a4; font-size: 11px; }
-.tl-item .what { font-weight: 600; color: #1a2433; }
-.tl-item .more { color: #5b6573; font-size: 12px; }
-.panel-foot { padding: 12px 18px; border-top: 1px solid #e4e8ef; display: flex; gap: 6px; background: #f9fafc; flex-wrap: wrap; }
-.panel-foot .btn { flex: 1; padding: 8px 10px; border-radius: 8px; border: 1px solid #cdd4df; background: #fff; cursor: pointer; font-size: 12px; font-weight: 600; color: #1a2433; min-width: 80px; }
-.panel-foot .btn:hover { background: #f5f7fb; }
-.panel-foot .btn.primary { background: #2f6ee5; color: #fff; border-color: #2f6ee5; }
-.panel-foot .btn.primary:hover { background: #2356b8; }
-.panel-foot .btn.danger { color: #dc2626; border-color: #fee2e2; }
-.panel-foot .btn.danger:hover { background: #fee2e2; }
-.panel-foot .btn.warn { color: #d97706; border-color: #fef3c7; }
-.panel-foot .btn.warn:hover { background: #fef3c7; }
+.timeline::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 4px; bottom: 4px;
+  width: 1px;
+  background: var(--at-hairline);
+}
+.tl-item {
+  position: relative;
+  padding: 4px 0 12px;
+  font-size: 12.5px;
+}
+.tl-item::before {
+  content: "";
+  position: absolute;
+  left: -24px;
+  top: 7px;
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: var(--at-canvas);
+  border: 2px solid var(--at-coral);
+}
+.tl-item.done::before { background: var(--at-forest); border-color: var(--at-forest); }
+.tl-item .when { color: var(--at-muted); font-size: 11px; }
+.tl-item .what { font-weight: 500; color: var(--at-ink); }
+.tl-item .more { color: var(--at-body); font-size: 12px; }
+
+/* Foot — Airtable primary CTA near-black */
+.panel-foot {
+  padding: var(--at-s-sm) var(--at-s-lg);
+  border-top: 1px solid var(--at-hairline);
+  display: flex;
+  gap: var(--at-s-xs);
+  background: var(--at-surface-soft);
+  flex-wrap: wrap;
+}
+.panel-foot .btn {
+  flex: 1;
+  padding: 9px 12px;
+  border-radius: var(--at-r-lg);
+  border: 1px solid var(--at-hairline);
+  background: var(--at-canvas);
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--at-ink);
+  min-width: 80px;
+  font-family: inherit;
+}
+.panel-foot .btn:active { background: var(--at-surface-soft); }
+.panel-foot .btn.primary {
+  background: var(--at-ink);
+  color: var(--at-on-primary);
+  border-color: var(--at-ink);
+}
+.panel-foot .btn.primary:active { background: var(--at-primary-active); }
+.panel-foot .btn.danger { color: var(--at-coral); border-color: var(--at-coral); }
+.panel-foot .btn.danger:active { background: #fbe6dc; }
+.panel-foot .btn.warn { color: #7a5818; border-color: var(--at-mustard); }
+.panel-foot .btn.warn:active { background: #fdf3df; }
 </style>

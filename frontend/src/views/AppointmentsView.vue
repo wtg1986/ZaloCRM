@@ -1,15 +1,31 @@
 <template>
-  <div class="apt-page">
-    <!-- Page header -->
-    <header class="apt-header">
-      <button class="icon-btn drawer-toggle" title="Mở bộ lọc" @click="sidebarOpen = !sidebarOpen">☰</button>
-      <div class="title-block">
-        <h1>📅 Lịch hẹn</h1>
-        <span class="meta">{{ totalLabel }} · {{ weekLabel }}</span>
+  <div class="airtable-scope apt-page">
+    <!-- Hero band: white canvas, h1 weight 400 size 32, 2-row layout (title+CTA / controls) -->
+    <header class="apt-hero">
+      <div class="apt-hero-row1">
+        <div class="title-block">
+          <button class="icon-btn icon-btn--bordered drawer-toggle" title="Mở bộ lọc" @click="sidebarOpen = !sidebarOpen">☰</button>
+          <div>
+            <h1 class="apt-hero-title">📅 Lịch hẹn</h1>
+            <div class="apt-hero-sub">
+              <b>{{ totalLabel }}</b> · {{ weekLabel }}
+            </div>
+          </div>
+        </div>
+        <div class="apt-hero-actions">
+          <button class="at-btn at-btn--secondary" :title="'Xuất CSV'">
+            <span class="ic">⤓</span>
+            <span class="btn-label">Xuất CSV</span>
+          </button>
+          <button class="at-btn at-btn--primary" @click="openQuickCreate(null)">
+            <span class="ic">+</span>
+            <span class="btn-label">Tạo lịch hẹn</span>
+          </button>
+        </div>
       </div>
-
-      <div class="header-actions">
-        <div class="viewtoggle">
+      <div class="apt-hero-row2">
+        <!-- Segmented view toggle -->
+        <div class="at-segmented">
           <button
             v-for="v in viewOptions"
             :key="v.value"
@@ -19,40 +35,37 @@
             @click="viewMode = v.value"
           >{{ v.label }}</button>
         </div>
-
-        <div class="datenav" :class="{ hidden: viewMode !== 'week' }">
-          <button class="icon-btn" @click="shiftWeek(-1)">‹</button>
-          <span class="label">{{ weekRangeLabel }}</span>
-          <button class="icon-btn" @click="shiftWeek(1)">›</button>
-          <button class="btn outline" @click="goToToday">Hôm nay</button>
+        <!-- Date nav (week view only) -->
+        <div class="apt-date-nav" :class="{ hidden: viewMode !== 'week' }">
+          <button class="icon-btn icon-btn--bordered" @click="shiftWeek(-1)">‹</button>
+          <span class="week-range">{{ weekRangeLabel }}</span>
+          <button class="icon-btn icon-btn--bordered" @click="shiftWeek(1)">›</button>
+          <button class="at-btn at-btn--secondary" @click="goToToday">Hôm nay</button>
         </div>
-
-        <button class="btn primary" @click="openQuickCreate(null)">
-          <span class="btn-icon">＋</span>
-          <span class="btn-label">Tạo lịch hẹn</span>
-        </button>
       </div>
     </header>
 
-    <!-- Active filter chips -->
-    <div class="apt-subheader">
-      <span class="lbl">Đang lọc:</span>
-      <span class="chip active">
+    <!-- Filter chips strip (Airtable: surface-soft bg, hairline border) -->
+    <div class="apt-filter-strip">
+      <span class="lbl">Đang lọc</span>
+      <span class="at-chip at-chip--active">
         <span class="dot" :style="{ background: saleColor(currentUserId).bg }" />
         {{ scopeLabel }}
-        <span v-if="scope !== 'me'" class="chip-info">({{ visibleAppointments.length }} lịch)</span>
+        <span v-if="scope !== 'me'" class="chip-info">· {{ visibleAppointments.length }} lịch</span>
       </span>
-      <span v-if="source !== 'all'" class="chip" @click="source = 'all'">
+      <span v-if="source !== 'all'" class="at-chip" @click="source = 'all'">
         Nguồn: {{ source === 'zalo' ? 'Zalo' : 'Thủ công' }} <span class="x">✕</span>
       </span>
-      <span v-if="selectedStatuses.size < APPOINTMENT_STATUS_OPTIONS.length" class="chip">
+      <span v-if="selectedStatuses.size < APPOINTMENT_STATUS_OPTIONS.length" class="at-chip">
         Trạng thái: {{ selectedStatuses.size }}/{{ APPOINTMENT_STATUS_OPTIONS.length }}
       </span>
-      <span v-if="selectedTypes.size < APPOINTMENT_TYPE_OPTIONS.length" class="chip">
+      <span v-if="selectedTypes.size < APPOINTMENT_TYPE_OPTIONS.length" class="at-chip">
         Loại: {{ selectedTypes.size }}/{{ APPOINTMENT_TYPE_OPTIONS.length }}
       </span>
       <div class="spacer" />
-      <span class="kb-hint"><kbd>N</kbd> tạo nhanh · <kbd>→</kbd> tuần sau · <kbd>Esc</kbd> đóng</span>
+      <span class="kb-hint">
+        <kbd>N</kbd> tạo nhanh · <kbd>←</kbd><kbd>→</kbd> tuần · <kbd>T</kbd> hôm nay · <kbd>Esc</kbd> đóng
+      </span>
     </div>
 
     <!-- Body: sidebar + content -->
@@ -377,147 +390,264 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+@import '@/components/automation/phase7/airtable.css';
+
+/* Page shell — Airtable design */
 .apt-page {
   display: flex; flex-direction: column;
   height: calc(100vh - var(--smax-topnav-h, 52px));
   width: 100%;
-  background: #f5f7fb;
+  background: var(--at-canvas);
   overflow: hidden;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  color: var(--at-body);
 }
 
-.apt-header {
-  display: flex; align-items: center; gap: 12px;
-  padding: 12px 20px;
-  background: #fff;
-  border-bottom: 1px solid #e4e8ef;
-  flex-wrap: wrap;
+/* ── Hero band (white canvas, 2 rows) ────────────────────────────────── */
+.apt-hero {
+  background: var(--at-canvas);
+  padding: var(--at-s-lg) var(--at-s-xl) var(--at-s-md);
+  border-bottom: 1px solid var(--at-hairline);
   flex-shrink: 0;
 }
+.apt-hero-row1 {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: var(--at-s-md);
+  margin-bottom: var(--at-s-md);
+}
+.apt-hero-row2 {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--at-s-md);
+  flex-wrap: wrap;
+}
+.title-block {
+  display: flex; align-items: flex-start; gap: var(--at-s-sm);
+  min-width: 0; flex: 1;
+}
+.apt-hero-title {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 400;
+  line-height: 1.2;
+  color: var(--at-ink);
+  letter-spacing: 0;
+}
+.apt-hero-sub {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--at-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+.apt-hero-sub b { color: var(--at-ink); font-weight: 500; }
+
+.apt-hero-actions { display: flex; align-items: center; gap: var(--at-s-xs); flex-shrink: 0; }
 .drawer-toggle { display: none; }
 
-.title-block { display: flex; align-items: baseline; gap: 12px; flex: 1; min-width: 0; }
-.title-block h1 { margin: 0; font-size: 20px; font-weight: 700; color: #1a2433; white-space: nowrap; }
-.title-block .meta { color: #8d96a4; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-.header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-
-.viewtoggle {
-  display: inline-flex; background: #f5f7fb;
-  border: 1px solid #e4e8ef; border-radius: 8px; padding: 2px;
-}
-.viewtoggle button {
-  padding: 6px 14px; background: transparent; border: none;
-  color: #5b6573; font-weight: 600; font-size: 12px; border-radius: 6px;
+/* ── At-btn / icon-btn (Airtable spec) ───────────────────────────────── */
+.at-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border-radius: var(--at-r-lg);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
   cursor: pointer;
+  white-space: nowrap;
+  border: none;
+  font-family: inherit;
+  transition: background 0.12s, border-color 0.12s;
 }
-.viewtoggle button.active { background: #fff; color: #1a2433; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
-.viewtoggle button:disabled { opacity: .35; cursor: not-allowed; }
+.at-btn--primary {
+  background: var(--at-primary);
+  color: var(--at-on-primary);
+}
+.at-btn--primary:active { background: var(--at-primary-active); }
+.at-btn--secondary {
+  background: var(--at-canvas);
+  color: var(--at-ink);
+  border: 1px solid var(--at-hairline);
+}
+.at-btn--secondary:active { background: var(--at-surface-soft); }
+.at-btn .ic { font-size: 15px; line-height: 1; }
+.at-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
-.datenav { display: inline-flex; align-items: center; gap: 4px; }
-.datenav.hidden { display: none; }
-.datenav .label { font-weight: 700; font-size: 13px; padding: 0 8px; min-width: 160px; text-align: center; }
 .icon-btn {
-  width: 32px; height: 32px; border-radius: 8px;
-  background: #fff; border: 1px solid #e4e8ef;
-  color: #5b6573; cursor: pointer; font-size: 14px;
-}
-.icon-btn:hover { background: #f5f7fb; }
-.btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 7px 14px; border-radius: 8px; border: 1px solid #cdd4df;
-  background: #fff; color: #1a2433; font-weight: 600; font-size: 13px;
+  width: 32px; height: 32px;
+  border-radius: var(--at-r-md);
+  background: transparent;
+  color: var(--at-body);
   cursor: pointer;
+  font-size: 14px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent;
+  font-family: inherit;
 }
-.btn:hover { background: #f5f7fb; }
-.btn.outline { background: #fff; }
-.btn.primary { background: #2f6ee5; color: #fff; border-color: #2f6ee5; }
-.btn.primary:hover { background: #2356b8; }
-.btn-icon { display: inline-block; }
+.icon-btn:active { background: var(--at-surface-soft); }
+.icon-btn--bordered { border-color: var(--at-hairline); background: var(--at-canvas); }
 
-.apt-subheader {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 20px;
-  background: #fff;
-  border-bottom: 1px solid #e4e8ef;
+/* ── Segmented view toggle ───────────────────────────────────────────── */
+.at-segmented {
+  display: inline-flex;
+  background: var(--at-surface-soft);
+  border: 1px solid var(--at-hairline);
+  border-radius: var(--at-r-md);
+  padding: 3px;
+  gap: 2px;
+}
+.at-segmented button {
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--at-body);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+.at-segmented button.active {
+  background: var(--at-ink);
+  color: var(--at-on-primary);
+}
+.at-segmented button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ── Date nav ────────────────────────────────────────────────────────── */
+.apt-date-nav { display: inline-flex; align-items: center; gap: var(--at-s-xs); }
+.apt-date-nav.hidden { display: none; }
+.apt-date-nav .week-range {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--at-ink);
+  padding: 0 var(--at-s-sm);
+  min-width: 170px;
+  text-align: center;
+}
+
+/* ── Filter chips strip (surface-soft bg) ─────────────────────────────── */
+.apt-filter-strip {
+  display: flex; align-items: center; gap: var(--at-s-xs);
+  padding: var(--at-s-sm) var(--at-s-xl);
+  background: var(--at-surface-soft);
+  border-bottom: 1px solid var(--at-hairline);
   flex-wrap: wrap;
   flex-shrink: 0;
 }
-.apt-subheader .lbl { font-size: 12px; color: #8d96a4; font-weight: 600; }
-.apt-subheader .spacer { flex: 1; }
-.apt-subheader .kb-hint { font-size: 11px; color: #8d96a4; }
-.apt-subheader .kb-hint kbd {
-  background: #f5f7fb; padding: 1px 6px; border-radius: 4px;
-  font-size: 10px; border: 1px solid #e4e8ef;
+.apt-filter-strip .lbl {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--at-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-right: var(--at-s-xs);
+}
+.apt-filter-strip .spacer { flex: 1; }
+.apt-filter-strip .kb-hint {
+  font-size: 11.5px;
+  color: var(--at-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.apt-filter-strip .kb-hint kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  background: var(--at-canvas);
+  border: 1px solid var(--at-hairline);
+  border-radius: var(--at-r-xs);
+  font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--at-ink);
+  margin: 0 1px;
 }
 
-.chip {
+.at-chip {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 4px 10px; border-radius: 14px;
-  background: #f5f7fb; border: 1px solid #e4e8ef;
-  font-size: 12px; cursor: pointer;
+  padding: 5px 11px;
+  background: var(--at-canvas);
+  border: 1px solid var(--at-hairline);
+  border-radius: var(--at-r-pill);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--at-body);
+  white-space: nowrap;
+  cursor: pointer;
 }
-.chip .dot { width: 8px; height: 8px; border-radius: 50%; }
-.chip.active { background: #2f6ee5; color: #fff; border-color: #2f6ee5; }
-.chip .chip-info { opacity: .8; font-weight: 500; }
-.chip .x { opacity: .6; margin-left: 2px; }
+.at-chip:active { background: var(--at-surface-soft); }
+.at-chip--active {
+  background: var(--at-ink);
+  color: var(--at-on-primary);
+  border-color: var(--at-ink);
+}
+.at-chip .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.at-chip .chip-info { opacity: 0.8; font-weight: 400; }
+.at-chip .x { margin-left: 2px; opacity: 0.6; font-size: 11px; }
 
+/* ── Body grid ──────────────────────────────────────────────────────── */
 .apt-body {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: 280px 1fr;
   flex: 1;
   min-height: 0;
   overflow: hidden;
   position: relative;
+  background: var(--at-canvas);
 }
-.sidebar-wrap { overflow: hidden; }
+.sidebar-wrap { overflow: hidden; background: var(--at-surface-soft); border-right: 1px solid var(--at-hairline); }
 .sidebar-backdrop { display: none; }
-
 .apt-content {
   overflow: hidden;
   display: flex; flex-direction: column;
   min-width: 0;
+  background: var(--at-canvas);
 }
 
 /* Tablet */
 @media (max-width: 1100px) {
-  .apt-body { grid-template-columns: 220px 1fr; }
+  .apt-body { grid-template-columns: 240px 1fr; }
+  .apt-hero { padding: var(--at-s-md) var(--at-s-lg); }
+  .apt-hero-title { font-size: 24px; }
 }
 
-/* Narrow tablet & mobile: sidebar becomes off-canvas drawer */
+/* Narrow tablet & mobile: sidebar = drawer */
 @media (max-width: 900px) {
   .apt-body { grid-template-columns: 1fr; }
-  .drawer-toggle { display: inline-flex; align-items: center; justify-content: center; }
+  .drawer-toggle { display: inline-flex; }
   .sidebar-wrap {
     position: absolute;
     top: 0; left: 0; bottom: 0;
-    width: 280px;
+    width: 300px;
     max-width: 86vw;
-    background: #fff;
     z-index: 20;
     transform: translateX(-100%);
-    transition: transform .25s ease;
-    box-shadow: 4px 0 16px rgba(0,0,0,.08);
+    transition: transform .22s ease;
+    box-shadow: 4px 0 24px rgba(24,29,38,0.10);
   }
   .sidebar-wrap.open { transform: translateX(0); }
   .sidebar-backdrop {
     display: block;
     position: absolute; inset: 0;
-    background: rgba(15,20,25,.32);
+    background: rgba(24,29,38,0.32);
     z-index: 15;
   }
-  .title-block h1 { font-size: 17px; }
-  .title-block .meta { display: none; }
-  .datenav .label { min-width: 110px; font-size: 12px; }
+  .apt-hero-row1 { flex-direction: column; align-items: stretch; }
+  .apt-hero-actions { flex-wrap: wrap; }
+  .apt-hero-title { font-size: 22px; }
+  .apt-hero-sub { font-size: 11px; }
 }
 
 /* Mobile portrait */
 @media (max-width: 600px) {
-  .apt-header { padding: 10px 12px; gap: 8px; }
-  .apt-subheader { padding: 6px 12px; }
-  .apt-subheader .kb-hint { display: none; }
-  .viewtoggle button { padding: 5px 10px; font-size: 11px; }
+  .apt-hero { padding: var(--at-s-md); }
+  .apt-filter-strip { padding: var(--at-s-xs) var(--at-s-md); overflow-x: auto; flex-wrap: nowrap; }
+  .apt-filter-strip .kb-hint, .apt-filter-strip .spacer { display: none; }
+  .at-segmented { flex: 1; }
+  .at-segmented button { flex: 1; padding: 6px 10px; font-size: 12px; }
   .btn-label { display: none; }
-  .btn.primary { padding: 7px 10px; }
-  .btn-icon { font-size: 16px; }
+  .at-btn { padding: 8px 12px; }
+  .apt-hero-actions .at-btn--primary { flex: 1; }
+  .apt-date-nav .week-range { min-width: 100px; font-size: 12px; }
 }
 </style>
