@@ -86,6 +86,10 @@ const routes = [
       { path: 'team/users', name: 'Settings.Users', component: () => import('@/components/settings/UserManagement.vue') },
       { path: 'team/teams', name: 'Settings.Teams', component: () => import('@/components/settings/TeamManagement.vue') },
       { path: 'team/roles', name: 'Settings.Roles', component: () => import('@/views/settings/RolesPage.vue') },
+      // RBAC Phase Phân Quyền 2026-05-21 (HS internal, branch private-hs)
+      { path: 'rbac/departments',       name: 'Settings.RbacDepartments',       component: () => import('@/views/rbac/DepartmentsView.vue') },
+      { path: 'rbac/permission-groups', name: 'Settings.RbacPermissionGroups',  component: () => import('@/views/rbac/PermissionGroupsView.vue') },
+      { path: 'rbac/users',             name: 'Settings.RbacUsers',             component: () => import('@/views/rbac/UsersRbacView.vue') },
 
       // ⚙ CRM Config
       { path: 'crm/statuses',    name: 'Settings.Statuses',    component: () => import('@/components/settings/StatusManagement.vue') },
