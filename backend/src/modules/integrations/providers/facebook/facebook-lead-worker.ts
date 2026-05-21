@@ -21,6 +21,7 @@
  */
 
 import { Worker, type Job } from 'bullmq';
+import { Redis } from 'ioredis';
 import { prisma } from '../../../../shared/database/prisma-client.js';
 import { getRedis } from '../../../../shared/redis-client.js';
 import { logger } from '../../../../shared/utils/logger.js';
@@ -349,13 +350,27 @@ async function processLeadJob(job: Job<LeadIngestionJobData>): Promise<void> {
 // ── Worker bootstrap ──────────────────────────────────────────────────────────
 
 let workerInstance: Worker | null = null;
+let workerRedis: Redis | null = null;
 
 export async function startFacebookLeadIngestionWorker(): Promise<void> {
-  const redis = await getRedis();
-  if (!redis) {
+  // Check if shared Redis is available (probe — if main client failed, skip worker too)
+  const shared = await getRedis();
+  if (!shared) {
     logger.warn('[fb-lead-worker] Redis unavailable — lead ingestion worker NOT started');
     return;
   }
+
+  // BullMQ Worker REQUIRES a dedicated connection with maxRetriesPerRequest=null
+  // (uses blocking commands like BLPOP). The shared client uses retries=3 for other code.
+  const url = process.env.REDIS_URL;
+  if (!url) {
+    logger.warn('[fb-lead-worker] REDIS_URL not set — worker not started');
+    return;
+  }
+  workerRedis = new Redis(url, {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+  });
 
   workerInstance = new Worker<LeadIngestionJobData>(
     'lead-ingestion',
@@ -369,7 +384,7 @@ export async function startFacebookLeadIngestionWorker(): Promise<void> {
       }
     },
     {
-      connection: redis,
+      connection: workerRedis,
       concurrency: 5,
     },
   );
@@ -393,8 +408,12 @@ export async function stopFacebookLeadIngestionWorker(): Promise<void> {
   if (workerInstance) {
     await workerInstance.close();
     workerInstance = null;
-    logger.info('[fb-lead-worker] stopped');
   }
+  if (workerRedis) {
+    await workerRedis.quit();
+    workerRedis = null;
+  }
+  logger.info('[fb-lead-worker] stopped');
 }
 
 async function updateEventError(leadgenId: string, reason: string): Promise<void> {

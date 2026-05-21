@@ -1,6 +1,6 @@
 <template>
   <v-dialog
-    v-model="modelValue"
+    :model-value="modelValue"
     max-width="640"
     scrollable
     @update:model-value="$emit('update:modelValue', $event)"
@@ -172,7 +172,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch } from 'vue';
 import SaleAssignmentPanel from './SaleAssignmentPanel.vue';
 import type { PoolEntry } from './SaleAssignmentPanel.vue';
 import type { OrgUserDto } from '@/api/list-sale-assignment-api';

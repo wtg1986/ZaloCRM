@@ -1,5 +1,5 @@
 <template>
-  <v-dialog v-model="modelValue" max-width="440" @update:model-value="$emit('update:modelValue', $event)">
+  <v-dialog :model-value="modelValue" max-width="440" @update:model-value="$emit('update:modelValue', $event)">
     <v-card>
       <v-card-title class="d-flex align-center gap-2">
         <v-icon color="error" aria-hidden="true">mdi-facebook</v-icon>

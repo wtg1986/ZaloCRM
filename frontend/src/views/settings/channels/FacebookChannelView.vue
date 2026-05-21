@@ -118,7 +118,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useFacebookChannel } from '@/composables/use-facebook-channel';
 import { useListSaleAssignments } from '@/composables/use-list-sale-assignments';
@@ -268,7 +268,7 @@ async function onMappingSave(payload: {
 }): Promise<void> {
   mappingSaving.value = true;
   try {
-    const savedMapping = await saveMapping(
+    await saveMapping(
       {
         pageConnectionId: payload.pageConnectionId,
         formId: payload.formId,
