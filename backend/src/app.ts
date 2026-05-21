@@ -279,6 +279,9 @@ async function bootstrap() {
       // FB Lead Ingestion — BullMQ worker (Phase 04)
       const { startFacebookLeadIngestionWorker } = await import('./modules/integrations/providers/facebook/facebook-lead-worker.js');
       void startFacebookLeadIngestionWorker();
+      // FB Page Token refresh — daily cron @ 03:00 (Phase 06)
+      const { startFacebookTokenRefreshCron } = await import('./modules/integrations/providers/facebook/facebook-token-refresh-cron.js');
+      startFacebookTokenRefreshCron();
     }
   } catch (err) {
     logger.error('Failed to start server:', err);
