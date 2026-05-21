@@ -46,7 +46,11 @@
     <div ref="scrollContainer" class="conv-scroll">
       <div v-if="loading && conversations.length === 0" class="loading">Đang tải…</div>
 
-      <TransitionGroup name="conv-list" tag="div" class="conv-list-inner">
+      <!-- Phase A perf fix v2 (2026-05-21) — Re-thêm TransitionGroup nhưng với
+           :key="activeTabKey" → tab switch tạo TransitionGroup INSTANCE MỚI,
+           Vue ko so sánh position cũ vs mới (vì khác instance), tab switch instant.
+           Trong cùng tab, key giữ nguyên → reorder (tin mới đến) animate mượt. -->
+      <TransitionGroup :key="activeTabKey || 'default'" name="conv-list" tag="div" class="conv-list-inner">
       <div
         v-for="conv in conversations"
         :key="conv.id"
@@ -95,7 +99,7 @@
             </div>
           </div>
 
-          <div class="ci-preview">{{ lastMessagePreview(conv) }}</div>
+          <div class="ci-preview" :class="`tone-${lastMessagePreviewTone(conv) ?? 'normal'}`">{{ lastMessagePreview(conv) }}</div>
 
           <!-- Tag row luôn render (kể cả rỗng) để giữ layout cố định.
                Merge Contact.tags + Friend.crmTagsPerNick (Zalo-mirrored 🔵 X).
@@ -108,7 +112,7 @@
               :class="{ 'tag-zalo': isZaloManaged(tag), 'tag-crm': !isZaloManaged(tag) }"
               :style="{ '--tag-color': tagColor(tag) }"
             >
-              <TagIcon v-if="isZaloManaged(tag)" :size="11" />{{ cleanTagName(tag) }}
+              <ZaloBrandIcon v-if="isZaloManaged(tag)" :size="11" />{{ cleanTagName(tag) }}
             </span>
 
             <v-menu
@@ -133,7 +137,7 @@
                   :class="{ 'tag-zalo': isZaloManaged(tag), 'tag-crm': !isZaloManaged(tag) }"
                   :style="{ '--tag-color': tagColor(tag) }"
                 >
-                  <TagIcon v-if="isZaloManaged(tag)" :size="11" />{{ cleanTagName(tag) }}
+                  <ZaloBrandIcon v-if="isZaloManaged(tag)" :size="11" />{{ cleanTagName(tag) }}
                 </span>
               </div>
             </v-menu>
@@ -209,7 +213,7 @@ import { api } from '@/api/index';
 import AiSentimentBadge from '@/components/ai/ai-sentiment-badge.vue';
 import Avatar from '@/components/ui/Avatar.vue';
 import NewMessageDialog from '@/components/chat/NewMessageDialog.vue';
-import TagIcon from '@/components/icons/TagIcon.vue';
+import ZaloBrandIcon from '@/components/icons/ZaloBrandIcon.vue';
 import { loadTagDefs, isZaloManaged, cleanTagName, tagColor } from '@/composables/use-crm-tag-defs';
 
 const props = defineProps<{
@@ -219,6 +223,11 @@ const props = defineProps<{
   search: string;
   accounts?: { id: string; displayName: string | null }[];
   selectedAccountIds?: string[];
+  /** Phase A perf (2026-05-21) — tab key (personal/group/main/other). Dùng làm
+   *  :key cho TransitionGroup → tab switch tạo instance MỚI → bỏ qua FLIP
+   *  animation cross-tab. Reorder trong cùng tab (tin mới đến) vẫn animate.
+   *  Không bắt buộc; nếu missing thì TransitionGroup hoạt động như trước. */
+  activeTabKey?: string;
 }>();
 
 const emit = defineEmits<{
@@ -453,11 +462,28 @@ watch(() => props.selectedId, async () => {
 }, { immediate: true });
 
 // ── Utility functions ───────────────────────────────────────────────────────
-function lastMessagePreview(conv: Conversation): string {
+// Tone gắn vào preview để CSS render màu theo trạng thái:
+//   danger = đỏ  (E17 KH gọi đến nhỡ — sale CHƯA bắt, cần alert)
+//   muted  = xám (E18 sale gọi không trả lời / E04 recall — không cấp bách)
+//   undefined = normal (text đen mặc định)
+interface PreviewResult { text: string; tone?: 'danger' | 'muted' }
+
+function fmtDuration(sec: number): string {
+  if (!sec || sec < 0) return '';
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function lastMessagePreviewResult(conv: Conversation): PreviewResult {
   const msg = conv.messages?.[0];
-  if (!msg) return '';
-  if (msg.isDeleted) return '(đã thu hồi)';
+  if (!msg) return { text: '' };
+
+  // E04 Tin thu hồi — anh chốt icon 🔂 (proposal 2026-05-21), tone muted
+  if (msg.isDeleted) return { text: '🔂 Tin nhắn đã thu hồi', tone: 'muted' };
+
   const prefix = msg.senderType === 'self' ? 'Bạn: ' : '';
+  const isInbound = msg.senderType !== 'self';
 
   // Parse JSON content (nếu có) để extract title / action
   let parsed: Record<string, unknown> | null = null;
@@ -466,63 +492,128 @@ function lastMessagePreview(conv: Conversation): string {
   }
   const action = typeof parsed?.action === 'string' ? parsed.action : '';
   const titleText = typeof parsed?.title === 'string' ? parsed.title.trim() : '';
+  const params = typeof parsed?.params === 'string'
+    ? safeParseLocal(parsed.params as string)
+    : (parsed?.params as Record<string, unknown> | undefined);
 
-  // Call message (stored as contact_card + action recommened.calltime/misscall)
+  // E14-E19 Cuộc gọi — tách 6 variant theo isCaller + calltype + misscall
   if (action.includes('calltime') || action.includes('misscall')) {
-    const params = typeof parsed?.params === 'string'
-      ? safeParseLocal(parsed.params as string)
-      : (parsed?.params as Record<string, unknown> | undefined);
     const isVideo = params?.calltype === 1;
     const isMissed = action.includes('misscall');
+    // isCaller=1 nghĩa là bên SDK đang dùng là CALLER. Map sang sender ZaloCRM:
+    // senderType='self' (sale gửi) đồng nghĩa sale là caller.
     const icon = isVideo ? '📹' : '📞';
-    if (isMissed) return prefix + `${icon} Cuộc gọi nhỡ`;
-    const dur = Number(params?.duration ?? 0);
-    if (dur > 0) {
-      const m = Math.floor(dur / 60);
-      const s = dur % 60;
-      return prefix + `${icon} Cuộc gọi ${m}:${s.toString().padStart(2, '0')}`;
+    const kind = isVideo ? 'video' : 'gọi';
+
+    if (isMissed) {
+      // E17/E19: KH gọi đến NHỠ (sale chưa bắt) — DANGER đỏ
+      if (isInbound) return { text: `${icon} Cuộc ${kind} nhỡ`, tone: 'danger' };
+      // E18: sale gọi đi KH không trả lời — muted xám
+      return { text: `${prefix}${icon} KH không trả lời`, tone: 'muted' };
     }
-    return prefix + `${icon} Cuộc gọi`;
+
+    // E14/E15/E16: đã nghe — bình thường
+    const dur = Number(params?.duration ?? 0);
+    const durStr = dur > 0 ? ` · ${fmtDuration(dur)}` : '';
+    const dirLabel = isInbound ? 'đến' : 'đi';
+    return { text: `${prefix}${icon} Cuộc ${kind} ${dirLabel}${durStr}` };
   }
 
-  // Reminder (action-based)
+  // E28 Reminder
   if (action === 'msginfo.actionlist' && titleText) {
-    return prefix + '📅 ' + truncate(titleText, 50);
+    return { text: prefix + '⏰ ' + truncate(titleText, 50) };
   }
 
-  // Rich content có title → preview bằng title thật, không phải "Tin đặc biệt"
+  // E20 Link share có preview (sau khi P1 reclassify thì content_type='link' rồi)
+  // Vẫn để fallback nếu rows mới chưa reclassify.
+  if (action === 'recommened.link' || action === 'recommended.link') {
+    return { text: prefix + '🔗 ' + truncate(titleText || 'Liên kết', 40) };
+  }
+
+  // E22 Gợi ý bạn bè (action recommened.user) — khác E21 show.profile (danh thiếp)
+  if (action === 'recommened.user' || action === 'recommended.user') {
+    return { text: prefix + '👥 Gợi ý bạn bè' + (titleText ? `: ${truncate(titleText, 30)}` : '') };
+  }
+  // E21 Danh thiếp profile thực
+  if (action === 'show.profile') {
+    return { text: prefix + '👤 Danh thiếp' + (titleText ? `: ${truncate(titleText, 30)}` : '') };
+  }
+
+  // E25 Bank transfer — extract tên bank từ title hoặc description
+  if (msg.contentType === 'bank_transfer' || action === 'zinstant.bankcard') {
+    const desc = typeof parsed?.description === 'string' ? parsed.description : '';
+    const bankName = titleText || desc.split('\n')[0] || '';
+    return {
+      text: prefix + '💳 Chuyển khoản' + (bankName ? ` · ${truncate(bankName, 25)}` : ''),
+    };
+  }
+
+  // Rich content có title → preview bằng title thật, không phải "rich" raw
   if (msg.contentType === 'rich' && titleText) {
-    return prefix + truncate(titleText.replace(/\n/g, ' · '), 60);
+    return { text: prefix + (action === 'rtf' ? '✨ ' : '') + truncate(titleText.replace(/\n/g, ' · '), 60) };
   }
 
-  // Per content-type
+  // Per content-type chuẩn
   switch (msg.contentType) {
-    case 'image': return prefix + '📷 Hình ảnh';
-    case 'sticker': return prefix + '🎴 Sticker';
-    case 'video': return prefix + '🎥 Video';
-    case 'voice': return prefix + '🎤 Voice';
-    case 'gif': return prefix + '🎞️ GIF';
-    case 'file': return prefix + '📎 ' + (titleText ? truncate(titleText, 40) : 'Tệp đính kèm');
-    case 'link': return prefix + '🔗 ' + (titleText ? truncate(titleText, 40) : 'Liên kết');
-    case 'bank_transfer': return prefix + '🏦 Tài khoản ngân hàng';
-    case 'call': return prefix + '📞 Cuộc gọi';
-    case 'qr_code': return prefix + '📱 Mã QR';
-    case 'reminder': return prefix + '📅 ' + (titleText ? truncate(titleText, 40) : 'Nhắc hẹn');
-    case 'poll': return prefix + '📊 ' + (titleText ? truncate(titleText, 40) : 'Bình chọn');
-    case 'note': return prefix + '📝 ' + (titleText ? truncate(titleText, 40) : 'Ghi chú');
-    case 'forwarded': return prefix + '↩️ ' + (titleText ? truncate(titleText, 40) : 'Chuyển tiếp');
+    case 'image': {
+      // E06: nếu có caption (title) → hiện caption, không có → "Hình ảnh"
+      if (titleText) return { text: prefix + '📷 ' + truncate(titleText, 40) };
+      // E07 Album — sẽ override ở MessageThread khi group; preview vẫn theo msg cuối
+      const albumTotal = (msg as { albumTotal?: number | null }).albumTotal;
+      if (albumTotal && albumTotal > 1) return { text: prefix + `🖼️ Bộ ảnh (${albumTotal})` };
+      return { text: prefix + '📷 Hình ảnh' };
+    }
+    case 'sticker': return { text: prefix + '🎴 Sticker' };
+    case 'video': {
+      // E08: kèm duration nếu lấy được từ params
+      const vdur = Number(params?.duration ?? 0);
+      return { text: prefix + '🎥 Video' + (vdur > 0 ? ` (${fmtDuration(vdur)})` : '') };
+    }
+    case 'voice':
+    case 'audio': {
+      // E10/E11: tin thoại có duration
+      const adur = Number(params?.duration ?? 0);
+      return { text: prefix + '🎤 Tin thoại' + (adur > 0 ? ` (${fmtDuration(adur)})` : '') };
+    }
+    case 'gif': return { text: prefix + '🎞 GIF' };
+    case 'file': return { text: prefix + '📎 ' + (titleText ? truncate(titleText, 40) : 'Tệp đính kèm') };
+    case 'link': return { text: prefix + '🔗 ' + (titleText ? truncate(titleText, 40) : 'Liên kết') };
+    case 'call': return { text: prefix + '📞 Cuộc gọi' };
+    case 'qr_code': return { text: prefix + '🔲 Mã QR' };
+    case 'reminder': return { text: prefix + '⏰ ' + (titleText ? truncate(titleText, 40) : 'Nhắc hẹn') };
+    case 'poll': {
+      // E29-E32 phân biệt 4 action
+      const label =
+        action === 'create' ? 'Tạo bình chọn'
+        : action === 'vote' ? 'Đã bình chọn'
+        : action === 'update' ? 'Cập nhật bình chọn'
+        : action === 'close' ? 'Đã đóng bình chọn'
+        : 'Bình chọn';
+      return { text: prefix + '📊 ' + label + (titleText ? `: ${truncate(titleText, 25)}` : '') };
+    }
+    case 'note': return { text: prefix + '📝 Ghi chú' + (titleText ? `: ${truncate(titleText, 30)}` : '') };
+    case 'forwarded': return { text: prefix + '↪️ Chuyển tiếp' + (titleText ? `: ${truncate(titleText, 30)}` : '') };
     case 'location': {
       const desc = typeof parsed?.description === 'string' ? parsed.description.trim() : '';
       const label = titleText || desc || 'Vị trí';
-      return prefix + '📍 ' + truncate(label, 50);
+      return { text: prefix + '📍 ' + truncate(label, 50) };
     }
-    case 'contact_card': return prefix + (titleText ? truncate(titleText, 40) : '👤 Danh thiếp');
-    case 'rich': return prefix + '📋 Tin đặc biệt';
+    case 'contact_card': return { text: prefix + (titleText ? truncate(titleText, 40) : '👤 Danh thiếp') };
+    case 'rich': return { text: prefix + '✨ Tin có định dạng' };
   }
 
-  // Plain text
+  // Plain text — E01
   const text = msg.content || '';
-  return prefix + truncate(text, 50);
+  return { text: prefix + truncate(text, 50) };
+}
+
+// Wrapper giữ chữ ký cũ cho template (chỉ trả text)
+function lastMessagePreview(conv: Conversation): string {
+  return lastMessagePreviewResult(conv).text;
+}
+
+function lastMessagePreviewTone(conv: Conversation): 'danger' | 'muted' | undefined {
+  return lastMessagePreviewResult(conv).tone;
 }
 
 function safeParseLocal(s: string): Record<string, unknown> | null {
@@ -813,7 +904,9 @@ function onPatternLeave() {
 
 .conv-scroll { flex: 1; overflow-y: auto; }
 .conv-list-inner { display: flex; flex-direction: column; }
-.conv-list-move { transition: transform 0.25s ease; }
+/* Reorder animation Phase A v2 (2026-05-21) — rút 0.25s → 0.15s cho feel snappier.
+   Enter/leave vẫn none vì conv mới (filter match) ko cần animate fade-in. */
+.conv-list-move { transition: transform 0.15s ease; }
 .conv-list-leave-active { transition: none; }
 .conv-list-enter-active { transition: none; }
 .loading {
@@ -952,6 +1045,15 @@ function onPatternLeave() {
   height: 16px; line-height: 16px;
   padding-right: 30px; /* chừa chỗ cho unread badge float trên */
 }
+/* Tone preview cho cuộc gọi & recall (proposal E04, E17, E18) */
+.ci-preview.tone-danger {
+  color: #dc2626; /* đỏ — KH gọi đến NHỠ chưa bắt, cần alert */
+  font-weight: 600;
+}
+.ci-preview.tone-muted {
+  color: var(--smax-grey-500); /* xám — sale gọi ko trả lời / tin recall */
+  font-style: italic;
+}
 /* Tag row luôn reserve khoảng nhỏ — kể cả khi không có tag */
 .ci-tag-row {
   display: flex; gap: 4px; margin-top: 3px; align-items: center;
@@ -981,9 +1083,8 @@ function onPatternLeave() {
   border-color: color-mix(in srgb, var(--tag-color) 70%, white);
   color: color-mix(in srgb, var(--tag-color) 75%, black);
 }
-.tag-mini.tag-zalo :deep(.tag-icon) {
-  color: var(--tag-color);
-}
+/* KHÔNG có "Zalo" text badge trong conv list — .ci-tag-row có overflow:hidden +
+ * height:16px sẽ clip badge. Icon brand Zalo đứng trước tên đã đủ phân biệt. */
 .tag-mini.tag-crm {
   --tag-color: #546E7A;
   background: color-mix(in srgb, var(--tag-color) 10%, white);
@@ -1037,9 +1138,23 @@ function onPatternLeave() {
   background: color-mix(in srgb, var(--tag-color) 12%, white);
   border-color: color-mix(in srgb, var(--tag-color) 70%, white);
   color: color-mix(in srgb, var(--tag-color) 75%, black);
+  position: relative;
+  margin-right: 5px;
 }
-.tag-popup-pill.tag-zalo :deep(.tag-icon) {
-  color: var(--tag-color);
+.tag-popup-pill.tag-zalo::before {
+  content: 'Zalo';
+  position: absolute;
+  top: -6px;
+  right: -3px;
+  background: #0068FF;
+  color: white;
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  padding: 1px 4px;
+  border-radius: 99px;
+  line-height: 1;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 .tag-popup-pill.tag-crm {
   --tag-color: #546E7A;

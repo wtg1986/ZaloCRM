@@ -24,6 +24,7 @@
         :loading="loadingConvs"
         :accounts="accountList"
         :selected-account-ids="selectedAccountIds"
+        :active-tab-key="inboxFilters.state.activeTab"
         v-model:search="searchQuery"
         @select="onSelectConv"
         @filter-account="onFilterAccount"
@@ -60,6 +61,7 @@
       @ask-ai="generateAiSuggestion"
       @toggle-contact-panel="showContactPanel = !showContactPanel"
       @add-reaction="onAddReaction"
+      @remove-reaction="onRemoveReaction"
       @delete-message="onDeleteMessage"
       @undo-message="onUndoMessage"
       @edit-message="onEditMessage"
@@ -106,6 +108,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { useToast } from '@/composables/use-toast';
 import ConversationList from '@/components/chat/ConversationList.vue';
 import MessageThread from '@/components/chat/MessageThread.vue';
 import ChatContactPanel from '@/components/chat/ChatContactPanel.vue';
@@ -136,7 +139,7 @@ const {
 
 const {
   typingUsers, replyingTo, editingMessage,
-  addReaction, sendTypingEvent, deleteMessage, undoMessage,
+  addReaction, removeReaction, sendTypingEvent, deleteMessage, undoMessage,
   editMessage, forwardMessage, pinConversation,
   setReplyTo, clearReplyTo, setEditing, clearEditing,
   registerSocketListeners,
@@ -188,11 +191,23 @@ const conversationCounts = computed(() => {
 extraFilters.value = inboxFilters.buildQueryParams();
 
 let filterApplyTimer: ReturnType<typeof setTimeout> | null = null;
+// M-tier follow-up (2026-05-21) — tách activeTab khỏi debounce.
+// Tab click cần FEEDBACK NGAY (cache hit paint instant), 150ms debounce làm user
+// cảm giác lag 280-420ms thay vì <100ms. Filter khác (tags/pills) vẫn debounce
+// để tránh refetch khi user gõ nhiều ký tự.
+watch(
+  () => inboxFilters.state.activeTab,
+  () => {
+    if (filterApplyTimer) clearTimeout(filterApplyTimer);
+    const params = inboxFilters.buildQueryParams();
+    extraFilters.value = params;
+    fetchConversations();
+  },
+);
 watch(
   () => [
     inboxFilters.state.folderId,
     inboxFilters.state.saleAssigneeId,
-    inboxFilters.state.activeTab,
     Array.from(inboxFilters.state.quickPills).join(','),
     inboxFilters.state.tagsZalo.join(','),
     inboxFilters.state.tagsCrm.join(','),
@@ -220,22 +235,45 @@ async function onAddReaction(msgId: string, reaction: string) {
   if (!selectedConvId.value) return;
   await addReaction(selectedConvId.value, msgId, reaction);
 }
+async function onRemoveReaction(msgId: string, reaction: string) {
+  if (!selectedConvId.value) return;
+  await removeReaction(selectedConvId.value, msgId, reaction);
+}
+const toast = useToast();
+
 async function onDeleteMessage(msgId: string) {
   if (!selectedConvId.value) return;
   await deleteMessage(selectedConvId.value, msgId);
 }
 async function onUndoMessage(msgId: string) {
   if (!selectedConvId.value) return;
-  await undoMessage(selectedConvId.value, msgId);
+  try {
+    await undoMessage(selectedConvId.value, msgId);
+    toast.success('Đã thu hồi tin nhắn');
+    await fetchMessages(selectedConvId.value);
+  } catch (err: any) {
+    toast.error(err?.response?.data?.error || 'Không thu hồi được tin');
+  }
 }
 async function onEditMessage(msgId: string, content: string) {
   if (!selectedConvId.value) return;
-  await editMessage(selectedConvId.value, msgId, content);
-  clearEditing();
+  try {
+    await editMessage(selectedConvId.value, msgId, content);
+    toast.warning('Đã sửa trên CRM — KH ở Zalo vẫn thấy bản gốc');
+    clearEditing();
+    await fetchMessages(selectedConvId.value);
+  } catch (err: any) {
+    toast.error(err?.response?.data?.error || 'Không sửa được tin');
+  }
 }
 async function onForwardMessage(msgId: string, targetIds: string[]) {
   if (!selectedConvId.value) return;
-  await forwardMessage(selectedConvId.value, msgId, targetIds);
+  try {
+    await forwardMessage(selectedConvId.value, msgId, targetIds);
+    toast.success(`Đã chuyển tiếp tới ${targetIds.length} hội thoại`);
+  } catch (err: any) {
+    toast.error(err?.response?.data?.error || 'Không chuyển tiếp được');
+  }
 }
 async function onPinConversation() {
   if (!selectedConvId.value || !selectedConv.value) return;
@@ -244,7 +282,8 @@ async function onPinConversation() {
   } else {
     await pinConversation(selectedConvId.value);
   }
-  await fetchConversations();
+  // bypassCache: pin state đã đổi server-side → cache cũ sẽ làm conv flicker
+  await fetchConversations({ bypassCache: true });
 }
 function onCancelReplyEdit() {
   clearReplyTo();
@@ -267,7 +306,8 @@ function onFiltersUpdate(params: Record<string, string>) {
   fetchConversations();
 }
 function onConversationMoved(_id: string, _tab: string) {
-  fetchConversations();
+  // bypassCache: conv vừa move qua tab khác → cache cũ sẽ flicker conv tại tab cũ
+  fetchConversations({ bypassCache: true });
 }
 
 // Khi user tạo conv mới từ "Tin nhắn mới" dialog → refresh list + nav vào conv đó.

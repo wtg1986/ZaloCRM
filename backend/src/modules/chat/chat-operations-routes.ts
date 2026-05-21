@@ -12,13 +12,18 @@ import { zaloOps, ZaloOpError } from '../../shared/zalo-operations.js';
 import { eventBuffer } from '../../shared/event-buffer.js';
 import { logger } from '../../shared/utils/logger.js';
 import { applyContactAggregateFromMessage, applyContactInteraction, applyFriendAggregate } from '../contacts/contact-aggregate.js';
+import { markExpected as markReactionEchoExpected } from './reaction-echo-cache.js';
 
 interface ResolvedMessageRefs {
   messageId: string;
   zaloMsgId: string;
-  cliMsgId: string;
+  cliMsgId: string | null;       // null nếu tin cũ trước migration 2026-05-21 — undo sẽ trả 400
   ownerId: string;
+  senderType: string;            // 'self' = sale của org gửi (qua phone HOẶC qua CRM)
   repliedByUserId: string | null;
+  content: string | null;
+  contentType: string;
+  sentAt: Date;
 }
 
 async function resolveMessageRefs(conversationId: string, messageId: string, userOrgId: string): Promise<ResolvedMessageRefs | null> {
@@ -28,16 +33,23 @@ async function resolveMessageRefs(conversationId: string, messageId: string, use
       conversationId,
       conversation: { orgId: userOrgId },
     },
-    select: { id: true, zaloMsgId: true, senderUid: true, repliedByUserId: true },
+    select: {
+      id: true, zaloMsgId: true, zaloCliMsgId: true, senderUid: true, senderType: true,
+      repliedByUserId: true, content: true, contentType: true, sentAt: true,
+    },
   });
 
   if (!message?.zaloMsgId) return null;
   return {
     messageId: message.id,
     zaloMsgId: message.zaloMsgId,
-    cliMsgId: message.zaloMsgId,
+    cliMsgId: message.zaloCliMsgId,   // real cliMsgId từ DB — null cho tin cũ
     ownerId: message.senderUid || '',
+    senderType: message.senderType,
     repliedByUserId: message.repliedByUserId || null,
+    content: message.content,
+    contentType: message.contentType,
+    sentAt: message.sentAt,
   };
 }
 
@@ -108,13 +120,27 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
         conv.zaloAccountId,
         mapReaction(reaction),
         {
-          data: { msgId: refs.zaloMsgId, cliMsgId: refs.cliMsgId },
+          data: { msgId: refs.zaloMsgId, cliMsgId: refs.cliMsgId ?? refs.zaloMsgId },
           threadId: conv.externalThreadId || '',
           type: threadType,
         },
       );
-      eventBuffer.recordReaction(id, refs.messageId, user.id, user.email, reaction, 'add');
+      // Phase A reaction fix (2026-05-21): bỏ eventBuffer.recordReaction để tránh
+      // double-emit. Trước fix: POST → recordReaction queue redis/batch → flush emit
+      // 'chat:reactions' lần 1; SAU ĐÓ POST → io.emit('chat:reactions') trực tiếp lần 2.
+      // FE socket handler increment count lần 1 (=1), lần 2 (=2) → anh thả 1 tim hiện 2.
+      // Giữ duy nhất direct emit phía dưới (latency thấp hơn, không qua queue).
       const displayEmoji = reactionDisplay(reaction);
+      // Phase A v3 (2026-05-21): mark expected SDK echo để handleZaloReaction skip
+      // chỉ self-echo từ CRM, KHÔNG skip genuine reaction từ Zalo App của anh.
+      // Lookup ownNick UID → key (zaloMsgId, emoji, ownUid) → cache 5s.
+      const ownNick = await prisma.zaloAccount.findUnique({
+        where: { id: conv.zaloAccountId },
+        select: { zaloUid: true },
+      });
+      if (ownNick?.zaloUid) {
+        markReactionEchoExpected(refs.zaloMsgId, displayEmoji, ownNick.zaloUid);
+      }
       // Multi-emoji: upsert keyed theo (messageId, reactorId, emoji) — cùng user có thể có nhiều emoji
       await prisma.messageReaction.upsert({
         where: {
@@ -208,7 +234,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
 
     try {
       const threadType = conv.threadType === 'group' ? 1 : 0;
-      await zaloOps.deleteMessage(conv.zaloAccountId, refs.zaloMsgId, refs.cliMsgId, refs.ownerId, conv.externalThreadId || '', threadType, onlyMe);
+      await zaloOps.deleteMessage(conv.zaloAccountId, refs.zaloMsgId, refs.cliMsgId ?? refs.zaloMsgId, refs.ownerId, conv.externalThreadId || '', threadType, onlyMe);
 
       if (!onlyMe) {
         await prisma.message.update({ where: { id: refs.messageId }, data: { isDeleted: true, deletedAt: new Date() } });
@@ -232,8 +258,20 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
     if (!refs) return reply.status(404).send({ error: 'Message not found' });
 
     try {
-      const threadType = conv.threadType === 'group' ? 1 : 0;
+      // 2026-05-21 ownership + cliMsgId checks:
+      // - senderType !== 'self' → không thu hồi được tin KH (Zalo không cho phép)
+      // - cliMsgId null → tin cũ trước migration, không có client id → Zalo từ chối [zalo:112]
+      if (refs.senderType !== 'self') {
+        return reply.status(403).send({ error: 'Chỉ thu hồi được tin do bạn gửi' });
+      }
+      if (!refs.cliMsgId) {
+        return reply.status(400).send({
+          error: 'Tin này không thu hồi được (thiếu client ID — tin gửi trước bản fix 2026-05-21)',
+        });
+      }
+      // Quá 24h: Zalo cũng từ chối — em không pre-check, để zca-js trả lỗi.
 
+      const threadType = conv.threadType === 'group' ? 1 : 0;
       await zaloOps.undoMessage(conv.zaloAccountId, refs.zaloMsgId, refs.cliMsgId, refs.ownerId, conv.externalThreadId || '', threadType);
       await prisma.message.update({ where: { id: refs.messageId }, data: { isDeleted: true, deletedAt: new Date() } });
 
@@ -244,6 +282,9 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
   });
 
   // ── POST /messages/:msgId/edit ───────────────────────────────────────────────
+  // 2026-05-21: zca-js KHÔNG support edit thật → edit chỉ áp dụng trên CRM, không sync Zalo.
+  // Khi sửa lần đầu: snapshot content cũ vào original_content + set edited_at.
+  // FE phải show toast cảnh báo "Chỉ sửa trên CRM" + badge "(đã sửa)" trong bubble.
   app.post('/api/v1/conversations/:id/messages/:msgId/edit', chatAccess, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;
     const { id, msgId } = request.params as { id: string; msgId: string };
@@ -258,19 +299,51 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
     if (!refs) return reply.status(404).send({ error: 'Message not found' });
 
     try {
-      if (refs.repliedByUserId !== user.id) return reply.status(403).send({ error: 'Can only edit your own messages' });
+      // 2026-05-21 fix B3: ownership check qua senderType (cả tin gửi từ phone lẫn từ CRM
+      // đều có senderType='self' — đại diện sale của org này). repliedByUserId chỉ set
+      // cho tin gửi từ CRM → check theo nó loại trừ tin từ phone (sai semantic).
+      if (refs.senderType !== 'self') return reply.status(403).send({ error: 'Chỉ sửa được tin do bạn gửi' });
 
-      const threadType = conv.threadType === 'group' ? 1 : 0;
-      await zaloOps.editMessage(conv.zaloAccountId, refs.zaloMsgId, refs.cliMsgId, content, conv.externalThreadId || '', threadType);
-      await prisma.message.update({ where: { id: refs.messageId }, data: { content } });
+      const existing = await prisma.message.findUnique({
+        where: { id: refs.messageId },
+        select: { content: true, originalContent: true },
+      });
+
+      const updated = await prisma.message.update({
+        where: { id: refs.messageId },
+        data: {
+          content: content.trim(),
+          // Chỉ set originalContent lần ĐẦU sửa (giữ snapshot gốc).
+          // Các lần sửa sau chỉ update content + editedAt.
+          originalContent: existing?.originalContent ?? existing?.content ?? null,
+          editedAt: new Date(),
+        },
+        select: { id: true, content: true, originalContent: true, editedAt: true },
+      });
 
       const io = (app as any).io as Server;
-      io?.emit('chat:message-edited', { conversationId: id, messageId: refs.messageId, zaloMsgId: refs.zaloMsgId, content });
-      return { success: true };
+      io?.emit('chat:message-edited', {
+        conversationId: id,
+        messageId: refs.messageId,
+        zaloMsgId: refs.zaloMsgId,
+        content: updated.content,
+        originalContent: updated.originalContent,
+        editedAt: updated.editedAt,
+      });
+      return {
+        success: true,
+        zaloSynced: false,
+        notice: 'Chỉ sửa trên CRM — KH ở Zalo vẫn thấy nội dung gốc',
+        message: updated,
+      };
     } catch (err) { return handleError(err, reply); }
   });
 
   // ── POST /forward ────────────────────────────────────────────────────────────
+  // 2026-05-21 FIX: zca-js api.forwardMessage({message}, [threadIds], type) — payload object,
+  // threadIds ARRAY. Trước đây gọi `forwardMessage(msgId, threadId, type)` positional 3 args →
+  // SDK throw + msgId string bị treat như nội dung text → KH nhận được chuỗi id → bug.
+  // Giờ: fetch text content của tin gốc → group target theo threadType → 1 SDK call cho mỗi nhóm.
   app.post('/api/v1/conversations/:id/forward', chatAccess, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;
     const { id } = request.params as { id: string };
@@ -286,19 +359,58 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
     const refs = await resolveMessageRefs(id, msgId, user.orgId);
     if (!refs) return reply.status(404).send({ error: 'Message not found' });
 
+    // Chỉ forward được text/rich. Media/sticker/call cần API khác (chưa support).
+    if (!['text', 'rich'].includes(refs.contentType)) {
+      return reply.status(400).send({
+        error: 'Chỉ hỗ trợ chuyển tiếp tin văn bản. Media/sticker/cuộc gọi chưa hỗ trợ.',
+      });
+    }
+
+    // Extract text từ content (rich có thể là JSON object).
+    let textToForward = refs.content?.trim() || '';
+    if (textToForward.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(textToForward);
+        textToForward = String(parsed.title || parsed.text || parsed.msg || textToForward);
+      } catch { /* keep raw */ }
+    }
+    if (!textToForward) return reply.status(400).send({ error: 'Tin gốc không có nội dung text' });
+
+    // Reference object cho Zalo forward — bắt buộc để Zalo server accept (nếu thiếu → [zalo:112]).
+    // id = msgId của tin gốc, ts = unix ms của sentAt.
+    const reference = {
+      id: refs.zaloMsgId,
+      ts: refs.sentAt.getTime(),
+      logSrcType: 0,
+      fwLvl: 0,
+    };
+
     try {
       const targets = await prisma.conversation.findMany({
         where: { id: { in: targetConversationIds }, orgId: user.orgId },
         select: { id: true, threadType: true, externalThreadId: true },
       });
 
-      let forwarded = 0;
-      for (const target of targets) {
-        const threadType = target.threadType === 'group' ? 1 : 0;
-        await zaloOps.forwardMessage(conv.zaloAccountId, refs.zaloMsgId, target.externalThreadId || '', threadType);
-        forwarded++;
+      const userTargets = targets.filter((t) => t.threadType !== 'group' && t.externalThreadId).map((t) => t.externalThreadId!);
+      const groupTargets = targets.filter((t) => t.threadType === 'group' && t.externalThreadId).map((t) => t.externalThreadId!);
+
+      type FwdResp = { success?: unknown[]; fail?: unknown[] };
+      let succeeded = 0;
+      let failed = 0;
+      if (userTargets.length) {
+        const res = (await zaloOps.forwardMessage(conv.zaloAccountId, textToForward, userTargets, 0, reference)) as FwdResp;
+        succeeded += res?.success?.length ?? userTargets.length;
+        failed += res?.fail?.length ?? 0;
       }
-      return { success: true, forwarded };
+      if (groupTargets.length) {
+        const res = (await zaloOps.forwardMessage(conv.zaloAccountId, textToForward, groupTargets, 1, reference)) as FwdResp;
+        succeeded += res?.success?.length ?? groupTargets.length;
+        failed += res?.fail?.length ?? 0;
+      }
+
+      const io = (app as any).io as Server;
+      io?.emit('chat:forwarded', { conversationId: id, messageId: refs.messageId, succeeded, failed });
+      return { success: true, forwarded: succeeded, failed };
     } catch (err) { return handleError(err, reply); }
   });
 
@@ -382,6 +494,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
           id: randomUUID(),
           conversationId: id,
           zaloMsgId: zaloMsgId || null,
+          zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
           senderType: 'self',
           senderUid: '',
           senderName: 'Staff',

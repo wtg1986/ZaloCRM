@@ -239,13 +239,22 @@
           <!-- Date divider -->
           <div v-if="item.kind === 'divider'" class="msg-divider">{{ item.label }}</div>
 
-          <!-- Album -->
+          <!-- Album — Phase A UI fix (2026-05-21): thêm Avatar top-left khớp với
+               message-bubble để align lề trái nhất quán. Sender name vào TRONG bubble. -->
           <div v-else-if="item.kind === 'album'" class="msg-album-wrap" :class="item.senderType === 'self' ? 'self' : ''">
+            <Avatar
+              v-if="item.senderType !== 'self'"
+              :src="resolveSenderAvatar(item.messages[0])"
+              :name="item.senderName || '?'"
+              :size="32"
+              :gradient-seed="item.messages[0]?.senderUid || item.senderName || ''"
+              class="msg-avatar"
+            />
             <div class="msg-album-body">
-              <div v-if="conversation.threadType === 'group' && item.senderType !== 'self'" class="album-sender">
-                {{ item.senderName || 'Unknown' }}
-              </div>
               <div class="bubble album">
+                <div v-if="conversation.threadType === 'group' && item.senderType !== 'self'" class="album-sender">
+                  {{ item.senderName || 'Unknown' }}
+                </div>
                 <div class="album-grid" :class="albumGridClass(item.messages.length)">
                   <img
                     v-for="m in item.messages"
@@ -253,7 +262,7 @@
                     :src="getImageUrl(m)!"
                     alt="Hình ảnh"
                     class="album-tile"
-                    @click="previewImageUrl = getImageUrl(m)!"
+                    @click="openImageLightbox(getImageUrl(m)!, item.messages.map(x => getImageUrl(x)!).filter(Boolean))"
                   />
                 </div>
                 <div v-if="item.totalExpected && item.totalExpected > item.messages.length" class="album-progress">
@@ -283,9 +292,12 @@
             :is-group="conversation.threadType === 'group'"
             :sender-avatar-url="resolveSenderAvatar(item.msg)"
             @contextmenu="onContextMenu($event, item.msg)"
-            @preview-image="previewImageUrl = $event"
+            @preview-image="openImageLightbox($event, [])"
+            @preview-video="previewVideoUrl = $event"
             @toggle-reaction="onToggleReaction(item.msg, $event)"
             @sender-click="onSenderClick(item.msg)"
+            @callback="onMessageCallback(item.msg)"
+            @open-profile="onOpenProfileFromCard"
           />
         </template>
 
@@ -472,11 +484,45 @@
       @forward="onForward"
     />
 
-    <!-- Image preview -->
-    <v-dialog v-model="showImagePreview" max-width="900" content-class="elevation-0">
-      <div class="text-center" @click="showImagePreview = false" style="cursor: pointer;">
-        <img :src="previewImageUrl" alt="Preview" style="max-width: 100%; max-height: 85vh; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.5);" />
-        <div class="text-caption mt-2" style="color: #aaa;">Nhấn để đóng</div>
+    <!-- E07 Image lightbox — anh chốt 2026-05-21: nút ‹ › + arrow keys điều hướng,
+         KHÔNG loop (đến đầu/cuối thì disable nút). Single-ảnh: ẩn nút điều hướng. -->
+    <v-dialog v-model="showImagePreview" max-width="1100" content-class="elevation-0" @keydown="onLightboxKey">
+      <div class="lightbox-wrap" @click.self="showImagePreview = false">
+        <button
+          v-if="lightboxList.length > 1"
+          class="lightbox-nav lightbox-prev"
+          :disabled="lightboxIndex <= 0"
+          title="Ảnh trước (←)"
+          @click.stop="lightboxPrev"
+        >‹</button>
+        <img :src="previewImageUrl" alt="Preview" class="lightbox-img" />
+        <button
+          v-if="lightboxList.length > 1"
+          class="lightbox-nav lightbox-next"
+          :disabled="lightboxIndex >= lightboxList.length - 1"
+          title="Ảnh sau (→)"
+          @click.stop="lightboxNext"
+        >›</button>
+        <div class="lightbox-meta">
+          <span v-if="lightboxList.length > 1">{{ lightboxIndex + 1 }} / {{ lightboxList.length }} ·</span>
+          Nhấn vùng tối để đóng
+        </div>
+      </div>
+    </v-dialog>
+
+    <!-- E08 Video preview popup — anh chốt 2026-05-21: play TRONG modal, KHÔNG mở tab mới.
+         autoplay + controls, click ngoài video để đóng. -->
+    <v-dialog v-model="showVideoPreview" max-width="900" content-class="elevation-0">
+      <div class="text-center" @click.self="showVideoPreview = false" style="cursor: pointer; padding: 16px;">
+        <video
+          v-if="previewVideoUrl"
+          :src="previewVideoUrl"
+          controls
+          autoplay
+          playsinline
+          style="max-width: 100%; max-height: 85vh; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); background: #000;"
+        />
+        <div class="text-caption mt-2" style="color: #aaa;">Nhấn ngoài video để đóng</div>
       </div>
     </v-dialog>
 
@@ -556,10 +602,11 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  send: [content: string, replyMessageId?: string | null];
+  send: [content: string, replyMessageId?: string | null, styles?: Array<{ st: string; start: number; len: number }>];
   'toggle-contact-panel': [];
   'ask-ai': [];
   'add-reaction': [msgId: string, reaction: string];
+  'remove-reaction': [msgId: string, reaction: string];
   'delete-message': [msgId: string];
   'undo-message': [msgId: string];
   'edit-message': [msgId: string, content: string];
@@ -577,8 +624,50 @@ const toast = useToast();
 const inputText = ref('');
 const messagesContainer = ref<HTMLElement | null>(null);
 const previewImageUrl = ref('');
-const showImagePreview = computed({ get: () => !!previewImageUrl.value, set: (v) => { if (!v) previewImageUrl.value = ''; } });
+const showImagePreview = computed({ get: () => !!previewImageUrl.value, set: (v) => { if (!v) { previewImageUrl.value = ''; lightboxList.value = []; lightboxIndex.value = 0; } } });
+// E07 Lightbox state — list ảnh trong album hiện tại + index ảnh đang xem.
+// Empty list = single ảnh (không show nút điều hướng).
+const lightboxList = ref<string[]>([]);
+const lightboxIndex = ref(0);
+
+function openImageLightbox(url: string, list: string[] = []): void {
+  lightboxList.value = list;
+  lightboxIndex.value = Math.max(0, list.indexOf(url));
+  previewImageUrl.value = url;
+}
+function lightboxPrev(): void {
+  if (lightboxIndex.value > 0) {
+    lightboxIndex.value -= 1;
+    previewImageUrl.value = lightboxList.value[lightboxIndex.value];
+  }
+}
+function lightboxNext(): void {
+  if (lightboxIndex.value < lightboxList.value.length - 1) {
+    lightboxIndex.value += 1;
+    previewImageUrl.value = lightboxList.value[lightboxIndex.value];
+  }
+}
+function onLightboxKey(e: KeyboardEvent): void {
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { lightboxPrev(); e.preventDefault(); }
+  else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { lightboxNext(); e.preventDefault(); }
+  else if (e.key === 'Escape') { showImagePreview.value = false; }
+}
+
+// E08 — Video popup modal (anh chốt 2026-05-21: play inline, không mở tab)
+const previewVideoUrl = ref('');
+const showVideoPreview = computed({ get: () => !!previewVideoUrl.value, set: (v) => { if (!v) previewVideoUrl.value = ''; } });
 const webhookLoading = ref(false);
+
+// E17/E18 — Cuộc gọi nhỡ "Gọi lại". Copy phone của conv contact để sale dial nhanh.
+function onMessageCallback(_msg: Message) {
+  const phone = props.conversation?.contact?.phone;
+  if (phone) {
+    navigator.clipboard?.writeText(phone).catch(() => {});
+    toast.success(`Đã copy SĐT ${phone} — dán vào app gọi`);
+  } else {
+    toast.warning('Liên hệ này chưa có SĐT trong CRM');
+  }
+}
 
 // Context menu state
 const showContextMenu = ref(false);
@@ -930,6 +1019,13 @@ function resolveSenderAvatar(msg: Message): string | null {
 // ── Click avatar / sender → open Zalo profile dialog ────────────────────────
 const userInfoDialog = ref(false);
 const userInfoUid = ref('');
+// E21/E22 — click "Mở chat" trong danh thiếp/gợi ý bạn bè → mở dialog Zalo user info.
+function onOpenProfileFromCard(uid: string) {
+  if (!uid) return;
+  userInfoUid.value = uid;
+  userInfoDialog.value = true;
+}
+
 function onSenderClick(msg: Message) {
   if (!msg.senderUid || msg.senderType === 'self') return;
   userInfoUid.value = msg.senderUid;
@@ -1560,7 +1656,18 @@ function onContextMenu(event: MouseEvent, msg: Message) {
   contextPos.value = { x: event.clientX, y: event.clientY };
   showContextMenu.value = true;
 }
-function onToggleReaction(msg: Message, emoji: string) { emit('add-reaction', msg.id, emoji); }
+function onToggleReaction(msg: Message, emoji: string) {
+  // Phase A fix (2026-05-21): click chip mà user ĐÃ reacted với emoji này → toggle OFF.
+  // Trước fix: luôn emit 'add-reaction' → POST /reactions lần 2 với cùng emoji →
+  // SDK addReaction → Zalo server xử lý như "react again" → CLEAR các emoji khác
+  // của user trên Zalo Real (bug anh phát hiện 2026-05-21).
+  const existing = (msg.reactions || []).find((r) => r.emoji === emoji);
+  if (existing?.reacted) {
+    emit('remove-reaction', msg.id, emoji);
+  } else {
+    emit('add-reaction', msg.id, emoji);
+  }
+}
 function onReply() { if (contextMsg.value) emit('set-reply-to', contextMsg.value); }
 function onEdit() {
   if (contextMsg.value) {
@@ -1625,10 +1732,17 @@ function onTemplateSelect(rendered: string) {
 function handleSend() {
   if (showTemplatePopup.value) { showTemplatePopup.value = false; return; }
   if (!inputText.value.trim()) return;
+
+  // 2026-05-21 fix: lấy rich payload {text, styles} từ editor để gửi format đi Zalo.
+  // Nếu không có styles → behaves như plain text (backward compat).
+  const rich = editorRef.value?.getRichPayload?.() || { text: inputText.value, styles: [] };
+  const textToSend = rich.text || inputText.value;
+  const styles = Array.isArray(rich.styles) && rich.styles.length > 0 ? rich.styles : undefined;
+
   if (props.editingMessage) {
-    emit('edit-message', props.editingMessage.id, inputText.value);
+    emit('edit-message', props.editingMessage.id, textToSend);
   } else {
-    emit('send', inputText.value, props.replyingTo?.id ?? null);
+    emit('send', textToSend, props.replyingTo?.id ?? null, styles);
   }
   inputText.value = '';
   editorRef.value?.clear();
@@ -2027,6 +2141,45 @@ watch(() => props.editingMessage?.id, async (id) => {
   text-align: center; margin: 13px 0 9px;
   color: var(--smax-grey-700); font-size: 11px;
 }
+/* E07 Image lightbox — anh chốt 2026-05-21: nút ‹ › + arrow keys, KHÔNG loop. */
+.lightbox-wrap {
+  position: relative;
+  display: flex; align-items: center; justify-content: center;
+  min-height: 60vh;
+  cursor: pointer;
+}
+.lightbox-img {
+  max-width: 100%; max-height: 85vh;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  cursor: default;
+}
+.lightbox-nav {
+  position: absolute;
+  top: 50%; transform: translateY(-50%);
+  width: 48px; height: 48px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.55);
+  color: white;
+  border: 0;
+  font-size: 32px; font-weight: 300;
+  line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  user-select: none;
+}
+.lightbox-nav:hover:not(:disabled) { background: rgba(0,0,0,0.78); }
+.lightbox-nav:disabled { opacity: 0.25; cursor: not-allowed; }
+.lightbox-prev { left: 16px; padding-right: 4px; }
+.lightbox-next { right: 16px; padding-left: 4px; }
+.lightbox-meta {
+  position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+  font-size: 12px; color: #aaa;
+  background: rgba(0,0,0,0.45);
+  padding: 4px 10px; border-radius: 12px;
+  white-space: nowrap;
+}
 .msg-divider::before,
 .msg-divider::after {
   content: ''; display: inline-block;
@@ -2056,18 +2209,25 @@ watch(() => props.editingMessage?.id, async (id) => {
   font-weight: 500;
 }
 
-.msg-album-wrap { display: flex; }
-.msg-album-wrap.self { justify-content: flex-end; }
+/* Phase A UI fix (2026-05-21):
+   - Thêm Avatar top-left cho album group msg (gap=7 match message-bubble)
+   - album-sender chuyển vào TRONG bubble.album (như sender-name của message-bubble)
+   - align-items: flex-start để avatar top-left */
+.msg-album-wrap { display: flex; align-items: flex-start; gap: 7px; margin-bottom: 5px; }
+.msg-album-wrap.self { flex-direction: row-reverse; }
+.msg-album-wrap .msg-avatar { flex-shrink: 0; }
 .msg-album-body { max-width: 60%; }
-.album-sender {
-  font-size: 11px; color: var(--smax-primary);
-  font-weight: 500; margin-bottom: 3px;
-}
 .bubble.album {
   background: var(--smax-bg);
   border-radius: 13px;
   overflow: hidden;
   box-shadow: 0 1px 1px rgba(0,0,0,0.06);
+}
+.album-sender {
+  font-size: 11.5px; color: var(--smax-primary);
+  font-weight: 600;
+  padding: 6px 10px 0;
+  line-height: 1.2;
 }
 .album-grid { display: grid; gap: 3px; max-width: 420px; }
 .album-grid-1 { grid-template-columns: 1fr; }

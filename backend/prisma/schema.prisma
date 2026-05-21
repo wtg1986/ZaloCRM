@@ -438,6 +438,13 @@ model Message {
   albumTotal      Int?      @map("album_total") // total items in album
   isDeleted       Boolean   @default(false) @map("is_deleted")
   deletedAt       DateTime? @map("deleted_at")
+  // Edit message audit (2026-05-21) — zca-js không support edit thật, edit chỉ áp dụng trên CRM.
+  // Khi sửa: lưu content cũ vào originalContent (lần đầu) + set editedAt = now.
+  originalContent String?   @map("original_content")
+  editedAt        DateTime? @map("edited_at")
+  // Zalo client message id (2026-05-21) — KHÁC zaloMsgId (server snowflake). Cần cho api.undo
+  // (Zalo expect cả msgId + cliMsgId). Tin cũ trước migration chưa có column này → null.
+  zaloCliMsgId    String?   @map("zalo_cli_msg_id")
   sentAt          DateTime  @map("sent_at")
   repliedByUserId String?   @map("replied_by_user_id")
   createdAt       DateTime  @default(now()) @map("created_at")

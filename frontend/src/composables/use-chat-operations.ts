@@ -21,6 +21,18 @@ export function useChatOperations() {
     }
   }
 
+  /** Toggle off — gỡ reaction của user trên msg. Phase A fix (2026-05-21):
+   *  Click chip mình đã reacted → call this instead of addReaction để KHÔNG
+   *  trigger SDK addReaction lần 2 (Zalo coi như user re-react → clear emoji khác). */
+  async function removeReaction(convId: string, msgId: string, reaction: string): Promise<void> {
+    try {
+      await api.delete(`/conversations/${convId}/reactions`, { data: { msgId, reaction } });
+    } catch (err) {
+      console.error('Failed to remove reaction:', err);
+      throw err;
+    }
+  }
+
   function sendTypingEvent(convId: string): void {
     const existing = typingTimers.get(convId);
     if (existing) return; // đang trong cooldown 3s, bỏ qua
@@ -127,6 +139,7 @@ export function useChatOperations() {
     replyingTo,
     editingMessage,
     addReaction,
+    removeReaction,
     sendTypingEvent,
     deleteMessage,
     undoMessage,

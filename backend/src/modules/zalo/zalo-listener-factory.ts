@@ -10,6 +10,7 @@ import { prisma } from '../../shared/database/prisma-client.js';
 import { handleIncomingMessage, handleMessageUndo } from '../chat/message-handler.js';
 import { detectContentType, extractAlbumInfo, updateContactAvatar } from './zalo-message-helpers.js';
 import { handleFriendEvent } from './friend-event-handler.js';
+import { consumeIfExpected as consumeReactionEcho } from '../chat/reaction-echo-cache.js';
 
 // Map Zalo Reactions enum code → display emoji (cùng map với chat-operations-routes)
 const ZALO_REACTION_DISPLAY: Record<string, string> = {
@@ -54,6 +55,16 @@ async function handleZaloReaction(accountId: string, io: Server | null, reaction
 
     const displayEmoji = ZALO_REACTION_DISPLAY[rawIcon] || rawIcon || '👍';
     const reactorName = String(data.dName || '');
+
+    // Phase A v3 (2026-05-21) — selective self-echo guard via reaction-echo-cache.
+    // BAD fix cũ: skip tất cả reactorUid === ownNickUid → SAI vì cũng skip genuine
+    // reaction từ Zalo App của anh (cùng UID).
+    // GOOD fix: chỉ skip nếu (zaloMsgId, emoji, reactorUid) match expected echo
+    // được mark trong POST /reactions handler (5s window). Genuine app reaction
+    // KHÔNG có matching mark → proceed bình thường → sync vào CRM.
+    if (consumeReactionEcho(targetZaloMsgId, displayEmoji, reactorZaloUid)) {
+      return; // confirmed CRM self-echo, POST handler đã ghi DB + emit socket
+    }
 
     // rIcon rỗng = remove, có icon = add (Zalo gửi cùng 1 event cho cả 2 — phân biệt qua rIcon empty)
     if (!rawIcon || rType < 0) {
@@ -269,6 +280,9 @@ export function attachZaloListener(ctx: ListenerContext): void {
         content,
         contentType,
         msgId: String(message.data?.msgId || ''),
+        // FIX 2026-05-21: capture cliMsgId — bắt buộc cho api.undo (zalo server check cả 2).
+        // Tin cũ trước fix này có cliMsgId=null → undo trả 400.
+        cliMsgId: message.data?.cliMsgId ? String(message.data.cliMsgId) : undefined,
         timestamp: parseInt(message.data?.ts || String(Date.now())),
         isSelf: message.isSelf || false,
         threadId: message.threadId || '',
@@ -300,11 +314,36 @@ export function attachZaloListener(ctx: ListenerContext): void {
     }
   });
 
+  // FIX 2026-05-21: zca-js Undo object có shape { data: TUndo, threadId, isSelf, isGroup }.
+  // TUndo.msgId là id của PACKET undo, KHÔNG phải tin bị thu hồi. Tin gốc nằm ở:
+  //   data.data.content.globalMsgId (Snowflake server-side) → match Message.zaloMsgIdNum
+  //   data.data.content.cliMsgId    (client counter)        → fallback nếu globalMsgId null
+  // Trước đây code đọc data.data.msgId → 0 row update vì không match được zaloMsgId nào.
   listener.on('undo', async (data: any) => {
-    const msgId = data.data?.msgId || data.msgId;
-    if (msgId) {
-      await handleMessageUndo(accountId, String(msgId));
-      io?.emit('chat:deleted', { accountId, msgId: String(msgId) });
+    const undoContent = data?.data?.content || {};
+    const globalMsgId = undoContent.globalMsgId;
+    const cliMsgIdNum = undoContent.cliMsgId;
+    if (!globalMsgId && !cliMsgIdNum) {
+      logger.warn(`[zalo:${accountId}] Undo event missing globalMsgId/cliMsgId`, undoContent);
+      return;
+    }
+    const updatedIds = await handleMessageUndo(accountId, {
+      globalMsgIdNum: globalMsgId ? BigInt(globalMsgId) : null,
+      cliMsgIdNum: cliMsgIdNum ? BigInt(cliMsgIdNum) : null,
+    });
+    // FIX B1 round-2: emit MULTIPLE messageId nếu match nhiều rows (event broadcast tới mọi nick).
+    // FE composable matches by zaloMsgId/messageId → update isDeleted live ở cột 3.
+    const zaloMsgIdStr = globalMsgId ? String(globalMsgId) : (cliMsgIdNum ? String(cliMsgIdNum) : null);
+    for (const messageId of updatedIds) {
+      io?.emit('chat:deleted', {
+        accountId,
+        messageId,
+        zaloMsgId: zaloMsgIdStr,
+      });
+    }
+    // Fallback emit bằng zaloMsgId nếu không update được row nào (FE tự match ở cache).
+    if (updatedIds.length === 0 && zaloMsgIdStr) {
+      io?.emit('chat:deleted', { accountId, zaloMsgId: zaloMsgIdStr });
     }
   });
 

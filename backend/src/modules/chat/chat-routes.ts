@@ -348,15 +348,37 @@ export async function chatRoutes(app: FastifyInstance) {
       prisma.conversation.findMany({
         where,
         include: {
-          // Contact: full include thay vì select hẹp — tránh race khi list refresh
-          // overwrite mất gender/totals/birthDate/... đã load ở /conversations/:id detail.
-          contact: true,
+          // M-tier (2026-05-21): narrow contact select — chỉ field LIST view cần.
+          // Detail fields (gender/totals/birthDate/lastOutboundAt/autoTags/priorityScore...)
+          // sẽ được preserve qua FE merge logic (use-chat.ts mergeConversation):
+          // existing.contact deep-merge với incoming.contact để KHÔNG mất detail
+          // đã load từ /conversations/:id. Trước fix: ~50 field/row × 100 rows = payload bloat.
+          contact: {
+            select: {
+              id: true,
+              fullName: true,
+              crmName: true,
+              avatarUrl: true,
+              phone: true,
+              zaloUid: true,
+              tags: true,
+              leadScore: true,
+              engagementPattern: true,
+              engagementScore: true,
+              engagementTrend: true,
+              statusId: true,
+              assignedUserId: true,
+              priorityScore: true,
+            },
+          },
           zaloAccount: { select: { id: true, displayName: true, avatarUrl: true, zaloUid: true } },
           pins: { select: { id: true } },
           messages: {
             take: 1,
-            orderBy: { sentAt: 'desc' },
-            select: { id: true, zaloMsgId: true, senderUid: true, senderName: true, content: true, contentType: true, senderType: true, sentAt: true, isDeleted: true, reactions: { select: { emoji: true, reactorId: true } } },
+            // Primary sort by Zalo Snowflake numeric (match 100% Zalo Web), sentAt fallback
+            // cho CRM-sent in-flight messages chưa nhận echo zaloMsgId.
+            orderBy: [{ zaloMsgIdNum: { sort: 'desc', nulls: 'last' } }, { sentAt: 'desc' }],
+            select: { id: true, zaloMsgId: true, senderUid: true, senderName: true, content: true, contentType: true, senderType: true, sentAt: true, isDeleted: true, editedAt: true, reactions: { select: { emoji: true, reactorId: true } } },
           },
         },
         orderBy: orderByClause,
@@ -371,9 +393,21 @@ export async function chatRoutes(app: FastifyInstance) {
     // — đây là unique key cho Friend row. KHÔNG dùng (accountId × contactId) vì cùng
     // contact có thể có nhiều Friend rows cùng account (per-nick UID khác nhau từ
     // session reset). Mỗi conv bind đúng 1 friend row qua externalThreadId.
-    const userPairs = conversations
+    // Dedup userPairs trước friend.findMany — list 100 rows có thể có conv trùng
+    // (account, uid) khi seed legacy. OR-clause với pair trùng → planner duplicate
+    // index scan (M-tier optimization 2026-05-21).
+    const userPairsRaw = conversations
       .filter(c => c.threadType === 'user' && c.contactId && c.externalThreadId)
       .map(c => ({ zaloAccountId: c.zaloAccountId, zaloUidInNick: c.externalThreadId! }));
+    const pairKeys = new Set<string>();
+    const userPairs: typeof userPairsRaw = [];
+    for (const p of userPairsRaw) {
+      const key = `${p.zaloAccountId}:${p.zaloUidInNick}`;
+      if (!pairKeys.has(key)) {
+        pairKeys.add(key);
+        userPairs.push(p);
+      }
+    }
     let friendMap = new Map<string, {
       id: string;
       relationshipKind: string; friendshipStatus: string;
@@ -665,12 +699,15 @@ export async function chatRoutes(app: FastifyInstance) {
     const [messages, total] = await Promise.all([
       prisma.message.findMany({
         where: { conversationId: id },
-        orderBy: { sentAt: 'desc' },
+        // Primary sort by Zalo Snowflake (zaloMsgIdNum) — match Zalo Web order.
+        // sentAt fallback chỉ kick in cho row chưa có zaloMsgIdNum (CRM in-flight).
+        orderBy: [{ zaloMsgIdNum: { sort: 'desc', nulls: 'last' } }, { sentAt: 'desc' }],
         skip: (parseInt(page) - 1) * parseInt(limit),
         take: parseInt(limit),
         select: {
           id: true,
           zaloMsgId: true,
+          zaloMsgIdNum: true, // FE primary sort key (string format vì BigInt → JSON via serializer)
           senderUid: true,
           senderName: true,
           content: true,
@@ -678,6 +715,9 @@ export async function chatRoutes(app: FastifyInstance) {
           senderType: true,
           sentAt: true,
           isDeleted: true,
+          // Edit audit (2026-05-21) — FE render badge "(đã sửa)" + tooltip nội dung gốc
+          originalContent: true,
+          editedAt: true,
           quote: true,
           attachments: true,
           albumKey: true,
@@ -696,7 +736,14 @@ export async function chatRoutes(app: FastifyInstance) {
   app.post('/api/v1/conversations/:id/messages', { preHandler: requireZaloAccess('chat') }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;
     const { id } = request.params as { id: string };
-    const { content, replyMessageId } = request.body as { content: string; replyMessageId?: string };
+    // 2026-05-21: thêm `styles` cho Zalo RTF (bold/italic/underline/strikethrough).
+    // Format: [{st: 'b'|'i'|'u'|'s', start: number, len: number}, ...]
+    // FE extract từ Tiptap editor JSON, BE pass thẳng vào api.sendMessage.
+    const { content, replyMessageId, styles } = request.body as {
+      content: string;
+      replyMessageId?: string;
+      styles?: Array<{ st: string; start: number; len: number }>;
+    };
 
     if (!content?.trim()) return reply.status(400).send({ error: 'Content required' });
 
@@ -736,7 +783,14 @@ export async function chatRoutes(app: FastifyInstance) {
       }
 
       zaloRateLimiter.recordSend(conversation.zaloAccountId);
-      const sendResult = await instance.api.sendMessage(quote ? { msg: content, quote } : { msg: content }, threadId, threadType);
+      // 2026-05-21 RTF: nếu có styles từ FE rich-text-editor → pass vào zca-js MessageContent.
+      // zca-js sendMessage signature: { msg, styles?, quote?, ... } → Zalo server encode + broadcast format.
+      const sendPayload: Record<string, unknown> = { msg: content };
+      if (Array.isArray(styles) && styles.length > 0) {
+        sendPayload.styles = styles;
+      }
+      if (quote) sendPayload.quote = quote;
+      const sendResult = await instance.api.sendMessage(sendPayload, threadId, threadType);
       // zca-js trả về { message: { msgId } | null, attachment: [{ msgId }] }
       // Extract zaloMsgId từ message (text) hoặc attachment[0] (media) để dedup với selfListen
       const sr = sendResult as unknown as { message?: { msgId?: number | string } | null; attachment?: Array<{ msgId?: number | string }> };
@@ -746,16 +800,26 @@ export async function chatRoutes(app: FastifyInstance) {
         logger.warn(`[chat] sendMessage không trả msgId — shape=${JSON.stringify(sendResult).slice(0, 200)}`);
       }
 
+      // 2026-05-21 RTF: nếu có styles → lưu content dạng JSON rich (matches Zalo echo format)
+      // + contentType='rich' để special-message-renderer render đúng bold/italic. Listener echo
+      // sau dedup sẽ update content theo Zalo echo (cùng shape) → vẫn đẹp.
+      const hasStyles = Array.isArray(styles) && styles.length > 0;
+      const persistedContent = hasStyles
+        ? JSON.stringify({ title: content, action: 'rtf', params: JSON.stringify({ styles }) })
+        : content;
+      const persistedContentType = hasStyles ? 'rich' : 'text';
+
       const message = await prisma.message.create({
         data: {
           id: randomUUID(),
           conversationId: id,
           zaloMsgId: zaloMsgId || null,
+          zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
           senderType: 'self',
           senderUid: conversation.zaloAccount.zaloUid || '',
           senderName: 'Staff',
-          content,
-          contentType: 'text',
+          content: persistedContent,
+          contentType: persistedContentType,
           quote: quote ?? undefined,
           sentAt: new Date(),
           repliedByUserId: user.id,
@@ -883,6 +947,7 @@ export async function chatRoutes(app: FastifyInstance) {
             id: randomUUID(),
             conversationId: id,
             zaloMsgId: zaloMsgId || null,
+            zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
             senderType: 'self',
             senderUid: conversation.zaloAccount.zaloUid || '',
             senderName: 'Staff',

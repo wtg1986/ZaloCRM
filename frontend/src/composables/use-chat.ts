@@ -32,6 +32,10 @@ interface ConversationMessage {
   senderType: string;
   sentAt: string;
   isDeleted: boolean;
+  // Optional — backend trả ở /messages event nhưng /conversations list không kèm (lưu lookaside cho socket update).
+  id?: string;
+  zaloMsgId?: string | null;
+  editedAt?: string | null;
 }
 
 export interface ReplyMessageRef {
@@ -118,15 +122,83 @@ export interface Message {
   sentAt: string;
   isDeleted: boolean;
   zaloMsgId: string | null;
+  /** Numeric Snowflake từ Zalo — primary sort key match Zalo Web (BigInt serialized as string). */
+  zaloMsgIdNum?: string | null;
   albumKey: string | null;
   albumIndex: number | null;
   albumTotal: number | null;
   reply?: ReplyMessageRef | null;
   reactions?: MessageReactionView[];
+  // Edit audit (2026-05-21) — set khi sale sửa tin trên CRM. Edit chỉ áp dụng local, không sync Zalo.
+  originalContent?: string | null;
+  editedAt?: string | null;
+}
+
+/** Sort comparator: primary by zaloMsgIdNum (Zalo Snowflake), fallback sentAt cho row chưa echo */
+function compareMessages(a: Message, b: Message): number {
+  const aNum = a.zaloMsgIdNum;
+  const bNum = b.zaloMsgIdNum;
+  if (aNum && bNum) {
+    // Compare BigInt từ string — chính xác cho mọi length (lex sort không work nếu length khác)
+    const diff = BigInt(aNum) - BigInt(bNum);
+    return diff > 0n ? 1 : diff < 0n ? -1 : 0;
+  }
+  // 1 trong 2 chưa có zaloMsgIdNum → fallback sentAt
+  return new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime();
 }
 
 // In-memory cache per-conv messages — quay lại conv cũ render ngay, fetch fresh background.
 const messagesCache = new Map<string, Message[]>();
+
+// M-tier tab-switch fix (2026-05-21) — per-filter-key conversation list cache.
+// Stale-while-revalidate: chuyển tab → paint từ cache NGAY (0ms lag), bg fetch update.
+// Trước fix: mỗi lần chuyển tab user chờ 1-3s HTTP+DB roundtrip → loading spinner.
+// Cache key encode toàn bộ filter params (tab, threadType, accountIds, search, ...).
+const conversationsCache = new Map<string, { data: Conversation[]; fetchedAt: number }>();
+const CONV_CACHE_MAX_ENTRIES = 16;  // ~4 tabs × ~4 filter variants
+
+// Debug hook (DEV only) — expose cache state via window.__zaloCRMConvCache để
+// diagnose cache miss khi tab switch vẫn cảm giác lag. Inspect:
+//   window.__zaloCRMConvCache.size, .keys(), .get(key)
+//   window.__zaloCRMConvCacheLog (last 20 hit/miss events with key)
+if (typeof window !== 'undefined') {
+  (window as unknown as { __zaloCRMConvCache: typeof conversationsCache }).__zaloCRMConvCache = conversationsCache;
+  (window as unknown as { __zaloCRMConvCacheLog: Array<{ t: number; event: string; key: string }> }).__zaloCRMConvCacheLog = [];
+}
+function logCacheEvent(event: 'hit' | 'miss' | 'set', key: string) {
+  if (typeof window === 'undefined') return;
+  const log = (window as unknown as { __zaloCRMConvCacheLog: Array<{ t: number; event: string; key: string }> }).__zaloCRMConvCacheLog;
+  log.push({ t: Date.now(), event, key });
+  if (log.length > 20) log.shift();
+}
+
+function evictOldConvCacheIfNeeded() {
+  if (conversationsCache.size <= CONV_CACHE_MAX_ENTRIES) return;
+  const entries = Array.from(conversationsCache.entries()).sort((a, b) => a[1].fetchedAt - b[1].fetchedAt);
+  const evictCount = entries.length - CONV_CACHE_MAX_ENTRIES;
+  for (let i = 0; i < evictCount; i++) conversationsCache.delete(entries[i][0]);
+}
+
+// Merge contact: backend list endpoint trả 14 field hẹp; detail endpoint /conversations/:id
+// trả full ~50 field. Khi list refresh chạy sau detail load, MERGE giữ field detail
+// (gender/totals/birthDate/lastOutboundAt/autoTags/priorityScore...) thay vì replace.
+function mergeContactPreserveDetail<T extends { id?: string } | null | undefined>(
+  existing: T,
+  incoming: T,
+): T {
+  if (!incoming) return incoming;
+  if (!existing || existing.id !== incoming.id) return incoming;
+  return { ...existing, ...incoming } as T;
+}
+
+function mergeConvListPreserveDetail(existing: Conversation[], incoming: Conversation[]): Conversation[] {
+  const existingMap = new Map(existing.map(c => [c.id, c]));
+  return incoming.map(c => {
+    const prev = existingMap.get(c.id);
+    if (!prev) return c;
+    return { ...c, contact: mergeContactPreserveDetail(prev.contact, c.contact) };
+  });
+}
 
 export function useChat() {
   const authStore = useAuthStore();
@@ -159,7 +231,10 @@ export function useChat() {
   function scheduleConvSync() {
     if (convSyncTimer) clearTimeout(convSyncTimer);
     convSyncTimer = setTimeout(() => {
-      void fetchConversations();
+      // bypassCache: socket đã optimistic move conv lên top. Nếu apply cache cũ
+      // (data trước khi socket fires) sẽ ghi đè state → conv "tụt xuống xíu rồi
+      // nhảy lên top" flicker. Đi thẳng server lấy fresh thay cache.
+      void fetchConversations({ bypassCache: true });
       convSyncTimer = null;
     }, 3000);
   }
@@ -177,20 +252,43 @@ export function useChat() {
 
   const extraFilters = ref<Record<string, string>>({});
 
-  async function fetchConversations() {
-    loadingConvs.value = true;
+  async function fetchConversations(opts?: { bypassCache?: boolean }) {
+    const params = {
+      limit: 100,
+      search: searchQuery.value,
+      accountId: accountFilter.value || undefined,
+      ...extraFilters.value,
+    };
+    const cacheKey = JSON.stringify(params);
+    const cached = opts?.bypassCache ? null : conversationsCache.get(cacheKey);
+
+    // M-tier stale-while-revalidate: cache hit → paint NGAY (no spinner flash khi
+    // chuyển tab). Cache miss → spinner (loading state) trong khi chờ HTTP.
+    //
+    // bypassCache=true cho socket-triggered refresh (scheduleConvSync sau khi
+    // socket optimistic move conv lên top). Lý do: nếu apply cache cũ sẽ ghi đè
+    // state đã được socket update → conv "tụt xuống xíu rồi nhảy lên top" flicker.
+    if (cached) {
+      logCacheEvent('hit', cacheKey);
+      conversations.value = mergeConvListPreserveDetail(conversations.value, cached.data);
+    } else {
+      if (!opts?.bypassCache) logCacheEvent('miss', cacheKey);
+      // Spinner chỉ hiện khi state thực sự rỗng (first load). bypassCache khi
+      // state đã có data từ socket → không hiện spinner để tránh blink.
+      if (conversations.value.length === 0) loadingConvs.value = true;
+    }
+
     try {
-      const res = await api.get('/conversations', {
-        params: {
-          limit: 100,
-          search: searchQuery.value,
-          accountId: accountFilter.value || undefined,
-          ...extraFilters.value,
-        },
-      });
+      const res = await api.get('/conversations', { params });
       // Apply pending optimistic mutations (tag assigns chưa được BE confirm) trước khi
       // replace state — tránh fetchConversations chạy giữa lúc BE đang sync wipe UI optimistic.
-      conversations.value = applyPendingTags(res.data.conversations);
+      const fresh = applyPendingTags(res.data.conversations as Conversation[]);
+      conversationsCache.set(cacheKey, { data: fresh, fetchedAt: Date.now() });
+      logCacheEvent('set', cacheKey);
+      evictOldConvCacheIfNeeded();
+      // Merge để giữ detail fields (Contact full ~50 field từ /conversations/:id)
+      // không bị wipe bởi narrow list response (14 field).
+      conversations.value = mergeConvListPreserveDetail(conversations.value, fresh);
     } catch (err) {
       console.error('Failed to fetch conversations:', err);
     } finally {
@@ -285,7 +383,7 @@ export function useChat() {
           messages.value = list;
         } else {
           const merged = [...list, ...socketOnly];
-          merged.sort((a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime());
+          merged.sort(compareMessages);
           messages.value = merged;
         }
       }
@@ -415,37 +513,39 @@ export function useChat() {
     void fetchAiUsage();
   }
 
-  async function sendMessage(content: string, replyMessageId?: string | null) {
+  async function sendMessage(content: string, replyMessageId?: string | null, styles?: Array<{ st: string; start: number; len: number }>) {
     if (!selectedConvId.value || !content.trim()) return;
-    await sendMessageTo(selectedConvId.value, content, replyMessageId);
+    await sendMessageTo(selectedConvId.value, content, replyMessageId, styles);
   }
 
-  /** Insert message vào messages.value đúng vị trí sort theo sentAt ASC.
-   *  Binary search O(log N) — không re-sort toàn array. Dùng cho socket arrivals
-   *  và sendMessageTo (msg vừa POST cũng có thể đến trễ hơn 1 msg từ socket khác). */
+  /** Insert message vào messages.value đúng vị trí — primary key zaloMsgIdNum (Zalo Snowflake),
+   *  fallback sentAt cho in-flight CRM message chưa nhận echo zaloMsgId.
+   *  Binary search O(log N) — không re-sort toàn array. */
   function insertMessageSorted(msg: Message) {
     const arr = messages.value;
-    const t = new Date(msg.sentAt).getTime();
     // Fast path: append-to-end (msg mới nhất, thường case)
-    if (arr.length === 0 || new Date(arr[arr.length - 1].sentAt).getTime() <= t) {
+    if (arr.length === 0 || compareMessages(arr[arr.length - 1], msg) <= 0) {
       arr.push(msg);
       return;
     }
-    // Binary search vị trí đầu tiên có sentAt > t
+    // Binary search vị trí đầu tiên có order > msg
     let lo = 0, hi = arr.length;
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
-      if (new Date(arr[mid].sentAt).getTime() <= t) lo = mid + 1;
+      if (compareMessages(arr[mid], msg) <= 0) lo = mid + 1;
       else hi = mid;
     }
     arr.splice(lo, 0, msg);
   }
 
-  async function sendMessageTo(conversationId: string, content: string, replyMessageId?: string | null) {
+  async function sendMessageTo(conversationId: string, content: string, replyMessageId?: string | null, styles?: Array<{ st: string; start: number; len: number }>) {
     if (!content.trim()) return;
     sendingMsg.value = true;
     try {
-      const payload = replyMessageId ? { content, replyMessageId } : { content };
+      // 2026-05-21 RTF: gắn styles vào payload nếu user format bold/italic/underline/strike.
+      const payload: Record<string, unknown> = { content };
+      if (replyMessageId) payload.replyMessageId = replyMessageId;
+      if (styles && styles.length > 0) payload.styles = styles;
       const res = await api.post(`/conversations/${conversationId}/messages`, payload);
       if (conversationId === selectedConvId.value) {
         if (!messages.value.find(m => m.id === res.data.id)) {
@@ -508,13 +608,34 @@ export function useChat() {
     });
 
     socket.on('chat:deleted', (data: { messageId?: string; zaloMsgId?: string }) => {
+      // Cột 3: update message bubble trong thread đang mở
       const msg = messages.value.find(m => m.id === data.messageId || m.zaloMsgId === data.zaloMsgId);
       if (msg) msg.isDeleted = true;
+      // Cột 2: update preview tin cuối trong conv list — match theo id/zaloMsgId
+      for (const conv of conversations.value) {
+        const preview = conv.messages?.[0];
+        if (preview && (preview.id === data.messageId || preview.zaloMsgId === data.zaloMsgId)) {
+          preview.isDeleted = true;
+        }
+      }
     });
 
-    socket.on('chat:message-edited', (data: { messageId?: string; zaloMsgId?: string; content: string }) => {
+    socket.on('chat:message-edited', (data: { messageId?: string; zaloMsgId?: string; content: string; originalContent?: string | null; editedAt?: string }) => {
+      // Cột 3: cập nhật content + edit audit fields
       const msg = messages.value.find(m => m.id === data.messageId || m.zaloMsgId === data.zaloMsgId);
-      if (msg) msg.content = data.content;
+      if (msg) {
+        msg.content = data.content;
+        if (data.originalContent !== undefined) msg.originalContent = data.originalContent;
+        if (data.editedAt) msg.editedAt = data.editedAt;
+      }
+      // Cột 2: preview tin cuối cũng đổi content + flag editedAt
+      for (const conv of conversations.value) {
+        const preview = conv.messages?.[0];
+        if (preview && (preview.id === data.messageId || preview.zaloMsgId === data.zaloMsgId)) {
+          preview.content = data.content;
+          if (data.editedAt) preview.editedAt = data.editedAt;
+        }
+      }
     });
 
     socket.on('chat:reactions', (data: { messageId?: string; msgId?: string; zaloMsgId?: string; reactions: { userId: string; userName: string; reaction: string; action: 'add' | 'remove' }[] }) => {
@@ -544,12 +665,14 @@ export function useChat() {
       msg.reactions = Array.from(counts.entries()).map(([emoji, count]) => ({ emoji, count, reacted: myEmojis.has(emoji) }));
     });
 
+    // Pin/unpin: bypass cache vì pin state đã đổi server-side, cache cũ sẽ flicker
+    // (pinned conv tụt xuống vị trí cũ rồi nhảy lại top khi fresh response về).
     socket.on('chat:pinned', () => {
-      fetchConversations();
+      fetchConversations({ bypassCache: true });
     });
 
     socket.on('chat:unpinned', () => {
-      fetchConversations();
+      fetchConversations({ bypassCache: true });
     });
   }
 

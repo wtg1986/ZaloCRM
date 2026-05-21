@@ -12,24 +12,31 @@
     />
 
     <div class="bubble-wrapper">
-      <!-- Tên người gửi: hiện cho group + non-self, click → mở Zalo user info -->
-      <div
-        v-if="isGroup && !isSelf"
-        class="sender-name sender-name-clickable"
-        @click="emit('sender-click')"
-      >
-        {{ message.senderName || 'Unknown' }}
-      </div>
-
       <!-- Bubble -->
       <div
         class="message-bubble"
         :class="{ 'is-self': isSelf, 'is-other': !isSelf }"
         @contextmenu.prevent="emit('contextmenu', $event)"
       >
-        <!-- Deleted -->
-        <div v-if="message.isDeleted" class="text-decoration-line-through font-italic" style="opacity: 0.6;">
-          {{ message.content || '(tin nhắn)' }}<span class="text-caption"> (đã thu hồi)</span>
+        <!-- Tên người gửi: hiện cho group + non-self, click → mở Zalo user info.
+             Phase A UI fix (2026-05-21): chuyển vào TRONG bubble (trên đầu nội dung)
+             theo style Zalo native. Trước fix nằm ngoài bubble. -->
+        <div
+          v-if="isGroup && !isSelf"
+          class="sender-name sender-name-clickable"
+          @click="emit('sender-click')"
+        >
+          {{ message.senderName || 'Unknown' }}
+        </div>
+
+        <!-- E04 Tin thu hồi — anh chốt 2026-05-21: icon 🔂 + italic xám + gạch ngang.
+             Nội dung gốc giữ lại (gạch ngang) để sale biết KH/sale đã thu hồi cái gì. -->
+        <div v-if="message.isDeleted" class="recall-card">
+          <div class="recall-header">
+            <span class="recall-icon">🔂</span>
+            <span class="recall-label">Tin nhắn đã thu hồi</span>
+          </div>
+          <div v-if="message.content" class="recall-body">{{ message.content }}</div>
         </div>
 
         <template v-else>
@@ -144,12 +151,19 @@
             <div v-if="formattedCaption" class="media-caption" v-html="formattedCaption" />
           </div>
 
-          <!-- Voice -->
-          <div v-else-if="message.contentType === 'voice'">
-            <div class="voice-msg">
-              <v-icon size="18">mdi-microphone</v-icon>
-              <span class="ml-1">Tin nhắn thoại</span>
-              <a v-if="voiceUrl" :href="voiceUrl" target="_blank" class="ml-2 voice-link">▶ Nghe</a>
+          <!-- E10/E11 Voice / Audio — anh chốt 2026-05-21: inline player có waveform-decor +
+               controls native, KHÔNG mở external link. Browser tự handle play/pause/seek/duration. -->
+          <div v-else-if="message.contentType === 'voice' || message.contentType === 'audio'">
+            <div class="voice-msg-v2">
+              <v-icon size="16" class="voice-mic-icon">mdi-microphone</v-icon>
+              <audio
+                v-if="voiceUrl"
+                :src="voiceUrl"
+                controls
+                preload="metadata"
+                class="voice-audio"
+              />
+              <span v-else class="voice-fallback">🎤 Tin thoại (không tải được)</span>
             </div>
             <div v-if="formattedCaption" class="media-caption" v-html="formattedCaption" />
           </div>
@@ -168,13 +182,17 @@
             v-else-if="isCallMessage"
             type="call"
             :content="callContent"
+            @callback="$emit('callback', message)"
           />
 
-          <!-- Special types -->
+          <!-- Special types — anh chốt 2026-05-21: phân biệt contact_card variants:
+               action='show.profile' → danh thiếp profile; action='recommened.user' → gợi ý bạn bè -->
           <SpecialMessageRenderer
             v-else-if="isSpecialType(message.contentType)"
-            :type="message.contentType"
+            :type="resolveSpecialType(message)"
             :content="parseContent(message.content)"
+            @callback="$emit('callback', message)"
+            @open-profile="onOpenProfile"
           />
 
           <!-- Default text — parse @mention + bullets + linebreaks -->
@@ -185,14 +203,22 @@
         <!-- Timestamp -->
         <div class="bubble-time" :class="{ 'text-end': isSelf }">
           {{ formatTime(message.sentAt) }}
+          <!-- Bug 3 fix: badge "(đã sửa)" + tooltip hover xem nội dung gốc.
+               Edit không sync Zalo — KH ở Zalo vẫn thấy bản cũ. Tooltip giúp sale tự verify. -->
+          <span
+            v-if="message.editedAt"
+            class="edited-badge"
+            :title="message.originalContent ? `Trước khi sửa: ${message.originalContent}` : 'Đã chỉnh sửa'"
+          >· đã sửa</span>
         </div>
       </div>
 
-      <!-- Reaction display -->
+      <!-- Reaction display — Phase A UI fix (2026-05-21): absolute position
+           bottom-right, 50% trong / 50% ngoài bubble, nền trắng, size +10%. -->
       <reaction-display
         v-if="reactions && reactions.length > 0"
         :reactions="reactions"
-        :class="isSelf ? 'justify-end' : 'justify-start'"
+        class="bubble-reaction-overlap"
         @toggle="(emoji) => emit('toggle-reaction', emoji)"
       />
 
@@ -229,8 +255,11 @@ const props = defineProps<{
 const emit = defineEmits<{
   contextmenu: [event: MouseEvent];
   'preview-image': [url: string];
+  'preview-video': [url: string];
   'toggle-reaction': [emoji: string];
   'sender-click': [];
+  callback: [message: Message];
+  'open-profile': [uid: string];
 }>();
 
 const SPECIAL_TYPES = new Set([
@@ -244,6 +273,31 @@ function isSpecialType(contentType: string | null | undefined): boolean {
 function parseContent(content: string | null): unknown {
   if (!content) return null;
   try { return JSON.parse(content); } catch { return content; }
+}
+
+/**
+ * P5 2026-05-21: contact_card polymorphic theo action. Map sang type cụ thể để
+ * special-message-renderer render UI khác nhau:
+ *   show.profile      → 'contact_card_profile' (danh thiếp thật, avatar + name + phone + Mở chat)
+ *   recommened.user   → 'user_suggest'         (gợi ý kết bạn — chip Gợi ý + Xem thông tin)
+ *   recommened.link   → 'link'                 (share link có preview)
+ *   khác (incl recall)→ giữ nguyên contentType (rich fallback)
+ */
+function resolveSpecialType(msg: Message): string {
+  if (msg.contentType !== 'contact_card') return msg.contentType;
+  try {
+    const p = safeParse(msg.content);
+    const action = String(p?.action || '').toLowerCase();
+    if (action === 'show.profile') return 'contact_card_profile';
+    if (action === 'recommened.user' || action === 'recommended.user') return 'user_suggest';
+    if (action === 'recommened.link' || action === 'recommended.link') return 'link';
+  } catch { /* fallthrough */ }
+  return 'contact_card';
+}
+
+// E21/E22 — mở Zalo user info dialog cho UID trong card. Parent (MessageThread) handle.
+function onOpenProfile(uid: string) {
+  emit('open-profile', uid);
 }
 
 function getImageUrl(msg: Message): string | null {
@@ -461,11 +515,13 @@ function extractMediaUrl(_kind: string, content: string | null): string | null {
   return typeof url === 'string' && url.startsWith('http') ? url : null;
 }
 
+// E08 — anh chốt 2026-05-21: video play TRONG popup modal, KHÔNG mở tab mới.
+// Emit 'preview-video' với URL — parent (MessageThread) mở modal `<video controls autoplay>`.
 function openVideo() {
   const p = safeParse(props.message.content);
   const url = (p?.href as string) || (p?.hdUrl as string) || (p?.normalUrl as string);
   if (typeof url === 'string' && url.startsWith('http')) {
-    window.open(url, '_blank');
+    emit('preview-video', url);
   }
 }
 
@@ -573,9 +629,13 @@ function openFile(href: string) {
 </script>
 
 <style scoped>
+/* Phase A UI fix (2026-05-21):
+   - align-items: flex-start → avatar luôn nằm TOP-LEFT của bubble (cả user msg + group msg)
+   - Bỏ msg-avatar margin-bottom hack (cũ: align với bottom + offset sender name)
+   - Có margin-bottom 18px ở bubble-wrapper để chừa chỗ cho reaction overlap (50% trong/ngoài) */
 .msg-row {
   display: flex;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 7px;
   margin-bottom: 5px;
 }
@@ -584,20 +644,22 @@ function openFile(href: string) {
 }
 .msg-avatar {
   flex-shrink: 0;
-  margin-bottom: 16px;  /* align với bubble (offset bởi sender name + time) */
 }
 .msg-avatar-clickable { cursor: pointer; transition: transform 0.1s ease; }
 .msg-avatar-clickable:hover { transform: scale(1.06); }
 .bubble-wrapper {
   max-width: 65%;
   position: relative;
+  /* Chừa chỗ cho reaction-display overlap (12px = 50% chiều cao chip 24px) */
+  margin-bottom: 12px;
 }
+/* Sender name giờ nằm TRONG bubble — style như header thay vì label ngoài. */
 .sender-name {
   font-size: 11.5px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--smax-primary, #2962ff);
-  margin-bottom: 3px;
-  padding: 0 4px;
+  margin-bottom: 4px;
+  line-height: 1.2;
 }
 .sender-name-clickable { cursor: pointer; }
 .sender-name-clickable:hover { text-decoration: underline; }
@@ -631,6 +693,13 @@ function openFile(href: string) {
   padding: 0 2px;
 }
 .bubble-time.text-end { text-align: right; }
+/* Badge "đã sửa" — italic xám nhạt, hover xem nội dung gốc qua title attr */
+.edited-badge {
+  font-style: italic;
+  color: var(--smax-grey-500, #9ca3af);
+  margin-left: 2px;
+  cursor: help;
+}
 
 .reminder-card {
   padding: 8px 12px;
@@ -794,6 +863,43 @@ function openFile(href: string) {
 }
 .voice-link:hover { text-decoration: underline; }
 
+.voice-msg-v2 {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 10px;
+  background: var(--smax-grey-100, #f5f6fa);
+  border-radius: 9px;
+  max-width: 280px;
+}
+.voice-mic-icon { color: var(--smax-primary, #2962ff); flex-shrink: 0; }
+.voice-audio { height: 32px; flex: 1; min-width: 0; }
+.voice-fallback { font-size: 12px; color: var(--smax-grey-700); font-style: italic; }
+
+.recall-card {
+  display: inline-block;
+  padding: 6px 10px;
+  background: rgba(107, 114, 128, 0.06);
+  border-radius: 7px;
+  border-left: 2px solid var(--smax-grey-500, #9e9e9e);
+  opacity: 0.85;
+  max-width: 100%;
+}
+.recall-header {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 11.5px;
+  color: var(--smax-grey-700, #5a6478);
+  font-weight: 600;
+}
+.recall-icon { font-size: 14px; }
+.recall-label { font-style: normal; }
+.recall-body {
+  text-decoration: line-through;
+  color: var(--smax-grey-700, #5a6478);
+  font-size: 13px;
+  font-style: italic;
+  margin-top: 2px;
+  word-break: break-word;
+}
+
 .bubble-wrapper .reaction-trigger {
   position: absolute;
   top: 50%;
@@ -809,5 +915,30 @@ function openFile(href: string) {
 }
 .reaction-trigger--right {
   right: -28px;
+}
+
+/* Phase A UI fix v2 (2026-05-21) — reaction display overlap bubble.
+   - Position: absolute, bottom-LEFT (anh chốt: icon đầu lề trái, grow ra phải).
+   - 50% trong / 50% ngoài bubble (overlap mép dưới).
+   - Nền trắng + viền + shadow + size +10% (24px).
+   - flex-nowrap → multi-reaction xếp NGANG, không stack dọc. */
+.bubble-wrapper > .bubble-reaction-overlap {
+  position: absolute;
+  bottom: -12px;
+  left: 8px;
+  margin: 0;
+  z-index: 2;
+}
+.bubble-wrapper :deep(.bubble-reaction-overlap .v-chip) {
+  background: #ffffff !important;
+  border: 1px solid var(--smax-grey-300, #d4d8e0) !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  height: 24px !important;
+  font-size: 13px !important;
+  padding: 0 9px !important;
+  border-radius: 12px !important;
+}
+.bubble-wrapper :deep(.bubble-reaction-overlap .v-chip:hover) {
+  background: var(--smax-grey-50, #fafbfc) !important;
 }
 </style>
