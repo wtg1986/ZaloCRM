@@ -34,23 +34,29 @@ const COOKIE_OPTS_BASE = {
 };
 
 export async function registerPrivacyRoutes(app: FastifyInstance): Promise<void> {
-  // POST /privacy/setup-pin — yêu cầu current password để chống session-hijack
+  // POST /privacy/setup-pin — Phase Privacy v2 2026-05-23: drop currentPassword gate.
+  // Anh chốt: setup PIN lần đầu chỉ cần PIN 4 số. JWT auth đã đủ verify identity.
+  // Nếu user đã có PIN trước → BLOCK, force dùng /change-pin (với oldPin).
   app.post('/api/v1/privacy/setup-pin', { preHandler: authMiddleware }, async (request, reply) => {
     const user = (request as any).user;
     if (!user) return reply.status(401).send({ error: 'unauthorized' });
-    const body = (request.body ?? {}) as { currentPassword?: string; pin?: string };
-    if (!body.pin || !body.currentPassword) {
-      return reply.status(400).send({ error: 'Cần currentPassword + pin' });
+    const body = (request.body ?? {}) as { pin?: string };
+    if (!body.pin) {
+      return reply.status(400).send({ error: 'Cần pin' });
     }
 
-    // Verify current login password (re-auth gate)
-    const u = await prisma.user.findUnique({
+    // Check existing PIN — force dùng /change-pin nếu đã setup trước
+    const existing = await prisma.user.findUnique({
       where: { id: user.userId ?? user.id },
-      select: { passwordHash: true },
+      select: { privacyPinHash: true },
     });
-    if (!u) return reply.status(404).send({ error: 'User not found' });
-    const valid = await bcrypt.compare(body.currentPassword, u.passwordHash);
-    if (!valid) return reply.status(403).send({ error: 'Mật khẩu hiện tại không đúng' });
+    if (!existing) return reply.status(404).send({ error: 'User not found' });
+    if (existing.privacyPinHash) {
+      return reply.status(409).send({
+        error: 'PIN đã setup. Dùng "Đổi PIN" với PIN cũ để thay đổi.',
+        code: 'PIN_ALREADY_SET',
+      });
+    }
 
     try {
       await setupPin(user.userId ?? user.id, body.pin);

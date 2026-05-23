@@ -54,8 +54,10 @@ export const usePrivacyStore = defineStore('privacy', {
         this.loading = false;
       }
     },
-    async setupPin(currentPassword: string, pin: string) {
-      await api.post('/privacy/setup-pin', { currentPassword, pin });
+    // Phase Privacy v2 2026-05-23: setup PIN lần đầu KHÔNG cần password (anh chốt).
+    // BE block nếu user đã có PIN — caller phải dùng changePin() thay.
+    async setupPin(pin: string) {
+      await api.post('/privacy/setup-pin', { pin });
       await this.fetchStatus(true);
     },
     async unlock(pin: string, durationMinutes: 5 | 15 | 480 | 720) {

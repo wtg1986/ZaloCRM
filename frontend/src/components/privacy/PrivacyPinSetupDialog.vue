@@ -1,16 +1,11 @@
 <!--
   PrivacyPinSetupDialog — Setup PIN lần đầu hoặc Đổi PIN.
   Phase Privacy v2 2026-05-23 — clone blockchain aesthetic của PrivacyUnlockDialog.
+  Anh chốt: Setup KHÔNG cần password — chỉ nhập PIN 4 số (1 step).
+  Change = 2 step (oldPin → newPin + confirm).
 
-  Props:
-    modelValue: boolean
-    mode: 'setup' | 'change'
-
-  Setup: yêu cầu currentPassword + new PIN (4 digit) + confirm PIN.
-  Change: yêu cầu oldPin + newPin (4 digit) + confirm newPin.
-
-  Emits:
-    update:modelValue, done
+  Props: modelValue, mode ('setup' | 'change')
+  Emits: update:modelValue, done
 -->
 <template>
   <v-dialog
@@ -19,28 +14,18 @@
     @update:model-value="$emit('update:modelValue', $event)"
   >
     <div class="ps-popup">
-      <!-- Animated hash flow background (blockchain aesthetic) -->
       <div class="ps-hash-flow">
         <div class="ps-hash-line">0xa3f8c2e4b9d1f6a7c5e8b2d4a9f7c3e1b8d6f2a4c7e9b3d1f5a8c2e4b9d6f1a3</div>
         <div class="ps-hash-line">0xb7e2f9c4a6d3e8b1f5c7a2d9e4b6f8c3a5d7e1b9f4c2a8d6e3b5f7c9a4d2e8b1</div>
       </div>
 
-      <!-- Step 1: credential entry -->
-      <div v-if="step === 'cred'">
+      <!-- Step 1: oldPin (chỉ cho mode='change') -->
+      <div v-if="mode === 'change' && step === 'old'">
         <div class="ps-emblem">
-          <div class="ps-hex">
-            <div class="ps-icon">{{ mode === 'setup' ? '⚙' : '🔄' }}</div>
-          </div>
+          <div class="ps-hex"><div class="ps-icon">🔄</div></div>
         </div>
-
-        <div class="ps-title">
-          {{ mode === 'setup' ? 'Setup PIN bảo mật' : 'Đổi PIN bảo mật' }}
-        </div>
-        <div class="ps-subtitle">
-          {{ mode === 'setup'
-            ? 'Nhập mật khẩu hiện tại để xác minh, sau đó đặt PIN 4 chữ số.'
-            : 'Nhập PIN cũ rồi đặt PIN 4 chữ số mới.' }}
-        </div>
+        <div class="ps-title">Xác minh PIN cũ</div>
+        <div class="ps-subtitle">Nhập PIN 4 số hiện tại để tiếp tục đổi PIN mới.</div>
 
         <div class="ps-encryption-proof">
           <div class="ps-enc-label">
@@ -54,24 +39,20 @@
 
         <div class="ps-form">
           <input
-            v-if="mode === 'setup'"
-            v-model="currentPassword"
-            type="password"
-            class="ps-input"
-            placeholder="Mật khẩu đăng nhập hiện tại"
-            autocomplete="current-password"
-          />
-          <input
-            v-else
+            ref="oldPinInput"
             v-model="oldPin"
             type="password"
             class="ps-input ps-pin-input"
-            placeholder="PIN cũ (4 số)"
+            placeholder="• • • •"
             maxlength="4"
             inputmode="numeric"
             pattern="[0-9]*"
+            @input="oldPin = oldPin.replace(/\D/g, '')"
+            @keyup.enter="canVerifyOldPin && (step = 'new')"
           />
         </div>
+
+        <div v-if="errorMsg" class="ps-error">⚠ {{ errorMsg }}</div>
 
         <div class="ps-status-row">
           <span class="ps-secure-chip"><span class="ps-dot"></span>BCRYPT</span>
@@ -79,29 +60,41 @@
           <span class="ps-secure-chip"><span class="ps-dot"></span>ZERO-LOG</span>
         </div>
 
-        <div v-if="errorMsg" class="ps-error">⚠ {{ errorMsg }}</div>
-
         <div class="ps-actions">
           <button class="ps-btn-ghost" @click="close">Huỷ</button>
-          <button class="ps-btn-primary" :disabled="!canProceed || submitting" @click="onProceed">
-            {{ submitting ? 'Đang xác minh...' : 'Tiếp tục →' }}
+          <button class="ps-btn-primary" :disabled="!canVerifyOldPin" @click="step = 'new'">
+            Tiếp tục →
           </button>
         </div>
       </div>
 
-      <!-- Step 2: new PIN entry -->
-      <div v-else-if="step === 'newpin'">
+      <!-- Step 2 (change) HOẶC Step 1 single (setup): new PIN entry -->
+      <div v-else>
         <div class="ps-emblem">
-          <div class="ps-hex">
-            <div class="ps-icon">🔢</div>
+          <div class="ps-hex"><div class="ps-icon">{{ mode === 'setup' ? '⚙' : '🔢' }}</div></div>
+        </div>
+        <div class="ps-title">
+          {{ mode === 'setup' ? 'Setup PIN bảo mật' : 'Đặt PIN mới' }}
+        </div>
+        <div class="ps-subtitle">
+          {{ mode === 'setup'
+            ? 'Đặt PIN 4 chữ số để bật chế độ Riêng tư. Đừng dùng PIN dễ đoán (1234, 0000, ngày sinh).'
+            : 'Đặt PIN 4 chữ số mới. Tất cả phiên đang mở sẽ bị khoá lại sau khi đổi.' }}
+        </div>
+
+        <div class="ps-encryption-proof">
+          <div class="ps-enc-label">
+            <span>NEW PIN HASH</span>
+            <span class="ps-alg">SHA-256 + SALT</span>
+          </div>
+          <div class="ps-enc-hash">
+            8d2f5a<span class="ps-blink">█</span>1c4e7b9f3a6d2c5e8b1a4f7d2e9c6b3a8f1d4e7c2b5a9f6d3
           </div>
         </div>
 
-        <div class="ps-title">Đặt PIN mới</div>
-        <div class="ps-subtitle">4 chữ số. Đừng dùng PIN dễ đoán (1234, 0000, ngày sinh).</div>
-
         <div class="ps-form">
           <input
+            ref="newPinInput"
             v-model="newPin"
             type="password"
             class="ps-input ps-pin-input"
@@ -109,6 +102,7 @@
             maxlength="4"
             inputmode="numeric"
             pattern="[0-9]*"
+            @input="newPin = newPin.replace(/\D/g, '')"
           />
           <input
             v-model="confirmPin"
@@ -118,7 +112,8 @@
             maxlength="4"
             inputmode="numeric"
             pattern="[0-9]*"
-            @keyup.enter="onSavePin"
+            @input="confirmPin = confirmPin.replace(/\D/g, '')"
+            @keyup.enter="canSavePin && onSavePin()"
           />
         </div>
 
@@ -133,9 +128,14 @@
         </div>
 
         <div class="ps-actions">
-          <button class="ps-btn-ghost" @click="step = 'cred'">← Quay lại</button>
+          <button
+            v-if="mode === 'change'"
+            class="ps-btn-ghost"
+            @click="step = 'old'"
+          >← Quay lại</button>
+          <button v-else class="ps-btn-ghost" @click="close">Huỷ</button>
           <button class="ps-btn-primary" :disabled="!canSavePin || submitting" @click="onSavePin">
-            {{ submitting ? 'Đang lưu...' : (mode === 'setup' ? '✓ Hoàn tất Setup PIN' : '✓ Đổi PIN') }}
+            {{ submitting ? 'Đang lưu...' : (mode === 'setup' ? '✓ Hoàn tất Setup' : '✓ Đổi PIN') }}
           </button>
         </div>
       </div>
@@ -144,7 +144,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, nextTick } from 'vue';
 import { usePrivacyStore } from '@/stores/privacy';
 import { useToast } from '@/composables/use-toast';
 
@@ -161,48 +161,54 @@ const emit = defineEmits<{
 const store = usePrivacyStore();
 const toast = useToast();
 
-const step = ref<'cred' | 'newpin'>('cred');
-const currentPassword = ref('');
+// Setup mode: step luôn = 'new' (1 step only).
+// Change mode: step = 'old' → 'new'.
+const step = ref<'old' | 'new'>(props.mode === 'change' ? 'old' : 'new');
 const oldPin = ref('');
 const newPin = ref('');
 const confirmPin = ref('');
 const errorMsg = ref('');
 const submitting = ref(false);
 
-watch(() => props.modelValue, (open) => {
+const oldPinInput = ref<HTMLInputElement | null>(null);
+const newPinInput = ref<HTMLInputElement | null>(null);
+
+watch(() => props.modelValue, async (open) => {
   if (open) {
-    step.value = 'cred';
-    currentPassword.value = '';
+    step.value = props.mode === 'change' ? 'old' : 'new';
     oldPin.value = '';
     newPin.value = '';
     confirmPin.value = '';
     errorMsg.value = '';
+    await nextTick();
+    (step.value === 'old' ? oldPinInput.value : newPinInput.value)?.focus();
   }
 });
 
-const canProceed = computed(() => {
-  if (props.mode === 'setup') return currentPassword.value.length > 0;
-  return /^\d{4}$/.test(oldPin.value);
+watch(step, async (s) => {
+  await nextTick();
+  (s === 'old' ? oldPinInput.value : newPinInput.value)?.focus();
 });
+
+const canVerifyOldPin = computed(() => /^\d{4}$/.test(oldPin.value));
 
 const pinMismatch = computed(() =>
   newPin.value.length === 4 && confirmPin.value.length === 4 && newPin.value !== confirmPin.value,
 );
-const WEAK_PINS = new Set(['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '1212', '2121', '0123']);
+
+const WEAK_PINS = new Set([
+  '0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999',
+  '1234', '4321', '1212', '2121', '0123', '9876',
+]);
 const weakPin = computed(() =>
   newPin.value.length === 4 && WEAK_PINS.has(newPin.value),
 );
+
 const canSavePin = computed(() =>
   /^\d{4}$/.test(newPin.value)
   && newPin.value === confirmPin.value
   && !weakPin.value,
 );
-
-async function onProceed() {
-  // Bước 1 chỉ chuyển step — chưa gọi API. API gọi ở step 2 cùng với newPin.
-  step.value = 'newpin';
-  errorMsg.value = '';
-}
 
 async function onSavePin() {
   if (!canSavePin.value || submitting.value) return;
@@ -210,7 +216,8 @@ async function onSavePin() {
   errorMsg.value = '';
   try {
     if (props.mode === 'setup') {
-      await store.setupPin(currentPassword.value, newPin.value);
+      // Phase Privacy v2 2026-05-23: setup KHÔNG cần password — chỉ PIN.
+      await store.setupPin(newPin.value);
       toast.success('⚙ Setup PIN thành công. Giờ bạn có thể bật Riêng tư.');
     } else {
       await store.changePin(oldPin.value, newPin.value);
@@ -220,9 +227,10 @@ async function onSavePin() {
     emit('update:modelValue', false);
   } catch (e: any) {
     errorMsg.value = e?.response?.data?.error || 'Lưu PIN thất bại';
-    // Nếu lỗi do password/PIN cũ sai → quay về step 1
-    if (errorMsg.value.match(/PIN cũ sai|mật khẩu/i)) {
-      step.value = 'cred';
+    // Nếu lỗi do PIN cũ sai → quay về step 'old'
+    if (props.mode === 'change' && /PIN cũ sai/i.test(errorMsg.value)) {
+      step.value = 'old';
+      oldPin.value = '';
     }
   } finally {
     submitting.value = false;
@@ -344,9 +352,13 @@ function close() {
 }
 .ps-input:focus { outline: none; border-color: #5E6AD2; box-shadow: 0 0 0 3px rgba(94,106,210,0.12); }
 .ps-input.ps-pin-input {
-  font-size: 20px; letter-spacing: 10px;
+  font-size: 22px; letter-spacing: 14px;
   text-align: center; font-family: 'JetBrains Mono', monospace;
   font-weight: 700;
+  padding: 13px 14px;
+}
+.ps-input.ps-pin-input::placeholder {
+  letter-spacing: 8px; font-size: 18px;
 }
 
 .ps-status-row {

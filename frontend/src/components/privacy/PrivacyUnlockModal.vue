@@ -119,7 +119,8 @@ async function setupPin() {
   submitting.value = true;
   error.value = '';
   try {
-    await store.setupPin(currentPwd.value, newPin.value);
+    // Phase Privacy v2 2026-05-23: setupPin signature đổi — chỉ pass pin, không cần currentPassword
+    await store.setupPin(newPin.value);
     error.value = '';
     alert('Setup PIN thành công. Giờ anh có thể mở khoá.');
     await store.fetchStatus(true);
