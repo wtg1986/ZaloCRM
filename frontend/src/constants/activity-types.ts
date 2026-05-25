@@ -37,7 +37,7 @@ export const CATEGORY_META: Record<ActivityCategory, CategoryMeta> = {
   appointment:   { label: 'Lịch hẹn',      icon: '📅', color: '#C2185B', defaultVisible: true },
   interaction:   { label: 'Tương tác',     icon: '💬', color: '#5D4037', defaultVisible: false }, // nhiều event
   system:        { label: 'Hệ thống',      icon: '⚙️', color: '#546E7A', defaultVisible: false },
-  automation:    { label: 'Tự động (Bot)', icon: '🤖', color: '#00897B', defaultVisible: false },
+  automation:    { label: 'Tự động (Bot)', icon: '🤖', color: '#00897B', defaultVisible: true }, // bao gồm auto_tag_change — sale cần thấy KH state change
 };
 
 /* Action-level metadata — icon đặc biệt + label động cho từng action.

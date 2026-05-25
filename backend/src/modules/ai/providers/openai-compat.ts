@@ -8,9 +8,10 @@ export async function generateWithOpenaiCompat(
   model: string,
   system: string,
   prompt: string,
+  maxTokens = 600,
 ) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30_000);
+  const timeout = setTimeout(() => controller.abort(), 60_000);
   try {
     const response = await fetch(url, {
       method: 'POST',
@@ -24,7 +25,7 @@ export async function generateWithOpenaiCompat(
           { role: 'system', content: system },
           { role: 'user', content: prompt },
         ],
-        max_tokens: 600,
+        max_tokens: maxTokens,
       }),
       signal: controller.signal,
     });

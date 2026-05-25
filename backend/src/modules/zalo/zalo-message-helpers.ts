@@ -8,7 +8,7 @@ import { logger } from '../../shared/utils/logger.js';
 // Well-known msgType keyword patterns — used to suppress noise logging
 const KNOWN_MSG_TYPE_PATTERNS = [
   'photo', 'image', 'sticker', 'video', 'voice',
-  'gif', 'link', 'location', 'file', 'doc',
+  'gif', 'link', 'location', 'file', 'doc', 'webchat',
   'recommended', 'card', 'bank', 'transfer',
   'call', 'voip', 'qr', 'remind', 'todo',
   'poll', 'vote', 'note', 'forward',
@@ -20,6 +20,34 @@ const KNOWN_MSG_TYPE_PATTERNS = [
  */
 export function detectContentType(msgType: string | undefined, content: any): string {
   if (!msgType) return 'text';
+
+  // ── FIX 2026-05-21: action-based dispatch PHẢI chạy trước msgType keyword check ──
+  // Zalo wrap call/bank/qr trong cùng family "recommended.*" → nếu để keyword check
+  // "recommended/card" ăn trước, call message sẽ bị classify nhầm thành 'contact_card'
+  // (KH gọi 39s lúc 12:10 = content_type='contact_card' thay vì 'call' → bị bỏ qua
+  // trong engagement call_count). Lưu ý: Zalo có typo "recommened" (thiếu chữ 'd') —
+  // match cả 2 để safe.
+  if (typeof content === 'object' && content !== null) {
+    const action = typeof content.action === 'string' ? content.action : '';
+    if (action.includes('calltime') || action.includes('misscall')) return 'call';
+    if (action === 'zinstant.bankcard') return 'bank_transfer';
+    if (typeof content.description === 'string' && content.description.includes('qrCodeUrl')) {
+      return 'qr_code';
+    }
+    // FIX G1 2026-05-21: action="recommened.link" / "recommended.link" = KH share link
+    // có preview (FB reel, Maps, YouTube...) — lẽ ra phải là 'link', không phải 'contact_card'.
+    // 635 row cũ bị classify sai vì rơi vào keyword check "recommended/card" ở dưới.
+    // Yêu cầu thêm href hợp lệ để tránh false-positive với link rỗng.
+    if (
+      (action === 'recommened.link' || action === 'recommended.link') &&
+      typeof content.href === 'string' && content.href.startsWith('http')
+    ) {
+      return 'link';
+    }
+    // Fallback shape detection cho call (1 số SDK version dùng key khác)
+    if (content.callDuration !== undefined || content.callType !== undefined) return 'call';
+  }
+
   if (msgType.includes('photo') || msgType.includes('image')) return 'image';
   if (msgType.includes('sticker')) return 'sticker';
   if (msgType.includes('video')) return 'video';

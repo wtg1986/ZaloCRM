@@ -13,6 +13,10 @@ export interface Appointment {
   contact?: { id: string; fullName: string | null; phone: string | null; avatarUrl?: string | null; zaloUid?: string | null };
   appointmentDate: string;
   appointmentTime: string;
+  // 2026-05-21 "Nhắc hẹn" fields
+  title?: string | null;
+  durationMin?: number;
+  location?: string | null;
   type: string;
   status: string;
   notes: string | null;
@@ -46,11 +50,17 @@ export const APPOINTMENT_STATUS_OPTIONS = [
   { text: 'Vắng mặt', value: 'no_show' },
 ];
 
+// 2026-05-21 chốt: 4 loại nhắc hẹn cho domain BĐS (rename từ healthcare).
+// Migration data cũ trong appointments table:
+//   reminder / tai_kham → follow_up (catchall "Theo dõi")
+//   new_visit           → meeting (Gặp mặt)
+//   consultation        → call (Gọi điện)
+//   other               → follow_up
 export const APPOINTMENT_TYPE_OPTIONS = [
-  { text: 'Tái khám', value: 'follow_up' },
-  { text: 'Khám mới', value: 'new_visit' },
-  { text: 'Tư vấn', value: 'consultation' },
-  { text: 'Khác', value: 'other' },
+  { text: 'Gọi điện', value: 'call' },
+  { text: 'Nhắn tin', value: 'message' },
+  { text: 'Gặp mặt', value: 'meeting' },
+  { text: 'Theo dõi', value: 'follow_up' },
 ];
 
 export function statusChipColor(status: string): string {

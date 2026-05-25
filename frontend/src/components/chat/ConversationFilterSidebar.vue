@@ -1,17 +1,27 @@
 <template>
   <aside class="filter-sidebar" :class="{ collapsed }">
-    <!-- Header: workspace + collapse -->
+    <!-- Header: workspace + privacy lock badge + collapse -->
     <header class="sb-header" :class="{ stacked: collapsed }">
       <div v-if="!collapsed" class="ws">
         <div class="ws-dot">{{ workspaceInitial }}</div>
         <div class="ws-name" :title="workspaceName">{{ workspaceName }}</div>
+        <PrivacyLockBadge v-if="canUsePrivacy" @click="onLockBadgeClick" />
       </div>
-      <div v-else class="ws-dot ws-dot-only">{{ workspaceInitial }}</div>
+      <div v-else class="ws-collapsed-stack">
+        <div class="ws-dot ws-dot-only">{{ workspaceInitial }}</div>
+        <PrivacyLockBadge v-if="canUsePrivacy" @click="onLockBadgeClick" />
+      </div>
       <button class="collapse-btn" :title="collapsed ? 'Mở rộng sidebar' : 'Thu gọn sidebar'" :aria-label="collapsed ? 'Mở rộng sidebar' : 'Thu gọn sidebar'" @click="toggleCollapsed">
         <span v-if="collapsed">»</span>
         <span v-else>‹‹</span>
       </button>
     </header>
+
+    <!-- Privacy unlock dialog (mở từ lock badge) -->
+    <PrivacyUnlockDialog
+      v-model="privacyDialogOpen"
+      :nick="privacyDialogNick"
+    />
 
     <!-- ══════ COLLAPSED MODE ══════ -->
     <div v-if="collapsed" class="c-content">
@@ -718,6 +728,10 @@
 import { ref, computed, onMounted, onUnmounted, reactive, watch } from 'vue';
 import type { AccountFolder, AutoTagKey, ScoreTier, StuckDuration, LastMessageWithin, EngagementPatternKey } from '@/composables/use-inbox-filters';
 import { useCrmTagDefs, cleanTagName, type CrmTagDef } from '@/composables/use-crm-tag-defs';
+import PrivacyLockBadge from '@/components/privacy/PrivacyLockBadge.vue';
+import PrivacyUnlockDialog from '@/components/privacy/PrivacyUnlockDialog.vue';
+import { usePrivacyStore } from '@/stores/privacy';
+import { useAuthStore } from '@/stores/auth';
 
 const props = defineProps<{
   filters: any; // useInboxFilters() return
@@ -736,6 +750,27 @@ defineEmits<{
   'clear-account-filter': [];
   'change': [];
 }>();
+
+// ─── Privacy lock badge ──────────────────────────────────
+// Anh chốt 2026-05-22: badge nằm ngay ô tên user, click → mở PrivacyUnlockDialog.
+// Hiển thị HH:MM countdown khi đã unlock. Badge chỉ hiện khi user có hasPin.
+const _privacyStore = usePrivacyStore();
+const _authStore = useAuthStore();
+const canUsePrivacy = computed(() => !!_authStore.user?.id);
+const privacyDialogOpen = ref(false);
+const privacyDialogNick = computed(() => ({
+  displayName: _authStore.user?.fullName || _authStore.user?.email || 'Bạn',
+  avatarUrl: null,
+  zaloUid: null,
+}));
+async function onLockBadgeClick(_wasUnlocked: boolean) {
+  // Anh chốt 2026-05-22: badge tự lock khi đang unlocked. Parent chỉ mở dialog
+  // khi state hiện tại đang lock → user click để nhập PIN mở khoá.
+  await _privacyStore.fetchStatus(true).catch(() => {});
+  if (!_privacyStore.isUnlocked) {
+    privacyDialogOpen.value = true;
+  }
+}
 
 // ─── Collapse state ──────────────────────────────────────
 const collapsed = ref(localStorage.getItem('filter-sidebar-collapsed') === '1');
@@ -829,11 +864,32 @@ async function onCreatePresetFromPopover() {
 type SectionKey = 'tag' | 'score' | 'time' | 'event' | 'sale' | 'engagement';
 const SECTION_KEYS: SectionKey[] = ['tag', 'score', 'time', 'event', 'sale', 'engagement'];
 
+// Anh chốt 2026-05-22: default chỉ 'event' (Sự kiện sắp tới) + 'sale' (Sale phụ trách)
+// expand. Các section khác (tag/score/time/engagement) collapse → user click chevron để mở.
+// Spacing compact + tránh dồn UI.
+const DEFAULT_OPEN: Record<SectionKey, boolean> = {
+  tag: false,
+  score: false,
+  time: false,
+  event: true,
+  sale: true,
+  engagement: false,
+};
+const SECTION_DEFAULT_MIGRATION_KEY = 'chat-sidebar.section.v2-default-applied';
 function loadSectionState(): Record<SectionKey, boolean> {
+  // Migration 1-time: user trước fix có tất cả keys = '1' (legacy default). Reset
+  // 4 keys không phải event/sale về null để dùng DEFAULT_OPEN mới. User vẫn có
+  // thể override sau bằng click chevron — localStorage sẽ ghi lại.
+  if (!localStorage.getItem(SECTION_DEFAULT_MIGRATION_KEY)) {
+    for (const k of SECTION_KEYS) {
+      if (!DEFAULT_OPEN[k]) localStorage.removeItem(`chat-sidebar.section.${k}`);
+    }
+    localStorage.setItem(SECTION_DEFAULT_MIGRATION_KEY, '1');
+  }
   const result = {} as Record<SectionKey, boolean>;
   for (const k of SECTION_KEYS) {
     const raw = localStorage.getItem(`chat-sidebar.section.${k}`);
-    result[k] = raw === null ? true : raw === '1';
+    result[k] = raw === null ? DEFAULT_OPEN[k] : raw === '1';
   }
   return result;
 }
@@ -1189,6 +1245,12 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+.ws-collapsed-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
 }
 
 .c-content {

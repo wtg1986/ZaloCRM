@@ -11,7 +11,7 @@
  */
 import { prisma } from '../../shared/database/prisma-client.js';
 import { logger } from '../../shared/utils/logger.js';
-import { computeDailyIntensity, recomputeContactEngagement } from './engagement-service.js';
+import { computeDailyIntensity, recomputeContactEngagement, parseCallMeta } from './engagement-service.js';
 
 interface BackfillOptions {
   orgId: string;
@@ -29,7 +29,12 @@ function toUtcDay(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
 
-const MEDIA_TYPES = new Set(['image', 'video', 'file', 'voice', 'audio', 'sticker']);
+// Phải đồng bộ với engagement-service.ts (anh chốt mở rộng 2026-05-21):
+// "File/ảnh/video" bao gồm thoại, vị trí, đính kèm danh thiếp, sticker, ...
+const MEDIA_TYPES = new Set([
+  'image', 'video', 'file', 'voice', 'audio', 'sticker',
+  'location', 'contact_card', 'bank_transfer', 'gif',
+]);
 const VOICE_TYPES = new Set(['voice', 'audio']);
 
 export async function runBackfill(opts: BackfillOptions): Promise<BackfillResult> {
@@ -51,7 +56,9 @@ export async function runBackfill(opts: BackfillOptions): Promise<BackfillResult
       sentAt: true,
       senderType: true,
       contentType: true,
+      content: true,
       conversationId: true,
+      quote: true,
       conversation: { select: { contactId: true } },
       reactions: {
         select: { reactorSource: true },
@@ -66,6 +73,9 @@ export async function runBackfill(opts: BackfillOptions): Promise<BackfillResult
     reactionCount: number;
     mediaShareCount: number;
     voiceMsgCount: number;
+    callCount: number;
+    missedCallCount: number;
+    quoteReplyCount: number;
     customerInitiated: boolean;
     /** earliest sentAt today (used to determine customerInitiated) */
     firstSentAt: number;
@@ -93,6 +103,9 @@ export async function runBackfill(opts: BackfillOptions): Promise<BackfillResult
         reactionCount: 0,
         mediaShareCount: 0,
         voiceMsgCount: 0,
+        callCount: 0,
+        missedCallCount: 0,
+        quoteReplyCount: 0,
         customerInitiated: false,
         firstSentAt: Number.POSITIVE_INFINITY,
         firstIsSelf: false,
@@ -104,12 +117,31 @@ export async function runBackfill(opts: BackfillOptions): Promise<BackfillResult
     const ct = m.contentType;
     const isMedia = MEDIA_TYPES.has(ct);
     const isVoice = VOICE_TYPES.has(ct);
+    const isCall = ct === 'call';
+    const q = m.quote as unknown;
+    const hasQuote = q !== null && q !== undefined
+      && (typeof q !== 'object' || Object.keys(q as object).length > 0);
 
     if (isSelf) row.outboundMsgCount++;
     else row.inboundMsgCount++;
 
     if (!isSelf && isMedia) row.mediaShareCount++;
     if (!isSelf && isVoice) row.voiceMsgCount++;
+    if (!isSelf && hasQuote) row.quoteReplyCount++;
+    if (isCall) {
+      // Parse content (stored as JSON text) → tách missed vs connected
+      let parsedContent: unknown = null;
+      try {
+        parsedContent = typeof m.content === 'string' && m.content.startsWith('{')
+          ? JSON.parse(m.content)
+          : m.content;
+      } catch { /* ignore */ }
+      const meta = parseCallMeta(parsedContent, isSelf);
+      if (meta) {
+        if (meta.isMissed) row.missedCallCount++;
+        else row.callCount++;
+      }
+    }
 
     // Reactions: count only zalo-sourced (KH thả ❤️ trên tin sale)
     if (isSelf) {
@@ -144,6 +176,9 @@ export async function runBackfill(opts: BackfillOptions): Promise<BackfillResult
         reactionCount: row.reactionCount,
         mediaShareCount: row.mediaShareCount,
         voiceMsgCount: row.voiceMsgCount,
+        callCount: row.callCount,
+        missedCallCount: row.missedCallCount,
+        quoteReplyCount: row.quoteReplyCount,
         customerInitiated: row.customerInitiated,
       });
 
@@ -155,6 +190,9 @@ export async function runBackfill(opts: BackfillOptions): Promise<BackfillResult
           reactionCount: row.reactionCount,
           mediaShareCount: row.mediaShareCount,
           voiceMsgCount: row.voiceMsgCount,
+          callCount: row.callCount,
+          missedCallCount: row.missedCallCount,
+          quoteReplyCount: row.quoteReplyCount,
           customerInitiated: row.customerInitiated,
           dailyIntensity: intensity,
         },
@@ -167,6 +205,9 @@ export async function runBackfill(opts: BackfillOptions): Promise<BackfillResult
           reactionCount: row.reactionCount,
           mediaShareCount: row.mediaShareCount,
           voiceMsgCount: row.voiceMsgCount,
+          callCount: row.callCount,
+          missedCallCount: row.missedCallCount,
+          quoteReplyCount: row.quoteReplyCount,
           customerInitiated: row.customerInitiated,
           dailyIntensity: intensity,
         },

@@ -562,6 +562,7 @@ export async function scoringRoutes(app: FastifyInstance): Promise<void> {
           id: randomUUID(),
           conversationId: conv.id,
           zaloMsgId: zaloMsgId || null,
+          zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
           senderType: 'self',
           senderUid: null,
           senderName: 'NBA',
@@ -569,6 +570,8 @@ export async function scoringRoutes(app: FastifyInstance): Promise<void> {
           contentType: 'text',
           sentAt: new Date(),
           repliedByUserId: user.id,
+          // Phase metrics 2026-05-22: NBA = AI suggest engine, counted as automation
+          sentVia: 'automation',
         },
       });
 

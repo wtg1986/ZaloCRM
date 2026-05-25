@@ -6,16 +6,21 @@ import type { FastifyInstance } from 'fastify';
 import { authMiddleware } from '../auth/auth-middleware.js';
 import { zaloPool } from './zalo-pool.js';
 import { prisma } from '../../shared/database/prisma-client.js';
+import { getZaloScope, canManageAccount } from './zalo-scope.js';
 
 export async function zaloRoutes(app: FastifyInstance): Promise<void> {
   // All routes in this plugin require auth
   app.addHook('preHandler', authMiddleware);
 
   // GET /api/v1/zalo-accounts — list accounts with live status from pool
+  // RBAC scoped 2026-05-22: chỉ trả nicks user được phép xem (xem getZaloScope).
   app.get('/api/v1/zalo-accounts', async (request) => {
     const user = request.user!;
+    const userId = (user as any).userId ?? user.id;
+    const scope = await getZaloScope(userId, user.orgId, user.role);
+
     const accounts = await prisma.zaloAccount.findMany({
-      where: { orgId: user.orgId },
+      where: { orgId: user.orgId, id: { in: scope.accessibleIds } },
       select: {
         id: true,
         zaloUid: true,
@@ -23,6 +28,7 @@ export async function zaloRoutes(app: FastifyInstance): Promise<void> {
         avatarUrl: true,
         phone: true,
         status: true,
+        ownerUserId: true,
         proxyUrl: true,
         lastConnectedAt: true,
         createdAt: true,
@@ -31,12 +37,14 @@ export async function zaloRoutes(app: FastifyInstance): Promise<void> {
       orderBy: { createdAt: 'asc' },
     });
 
-    // Merge live status from pool; mask proxy credentials
+    // Merge live status from pool; mask proxy credentials; thêm canManage flag
     return accounts.map((a) => ({
       ...a,
       proxyUrl: a.proxyUrl ? maskProxyUrl(a.proxyUrl) : null,
       hasProxy: !!a.proxyUrl,
       liveStatus: zaloPool.getStatus(a.id),
+      canManage: canManageAccount(a.ownerUserId, userId, user.role),
+      isOwnedByMe: a.ownerUserId === userId,
     }));
   });
 
@@ -51,14 +59,23 @@ export async function zaloRoutes(app: FastifyInstance): Promise<void> {
         return reply.status(400).send({ error: 'Invalid proxy URL format. Use: http://[user:pass@]host:port' });
       }
 
-      const account = await prisma.zaloAccount.create({
-        data: {
-          orgId: user.orgId,
-          ownerUserId: user.id,
-          displayName: displayName ?? null,
-          proxyUrl: proxyUrl ?? null,
-          status: 'qr_pending',
-        },
+      // FIX 2026-05-22 Bug A: tạo nick + auto-insert ZaloAccountAccess cho owner.
+      // Trước: owner KHÔNG hiện trong crew list (frontend đọc crew từ access table).
+      // Giờ: atomic create cả 2 trong tx, owner mặc định permission='admin'.
+      const account = await prisma.$transaction(async (tx) => {
+        const acc = await tx.zaloAccount.create({
+          data: {
+            orgId: user.orgId,
+            ownerUserId: user.id,
+            displayName: displayName ?? null,
+            proxyUrl: proxyUrl ?? null,
+            status: 'qr_pending',
+          },
+        });
+        await tx.zaloAccountAccess.create({
+          data: { zaloAccountId: acc.id, userId: user.id, permission: 'admin' },
+        });
+        return acc;
       });
 
       return reply.status(201).send(account);

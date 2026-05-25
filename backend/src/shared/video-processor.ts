@@ -122,7 +122,7 @@ async function probeVideoFile(filePath: string): Promise<VideoProbeMetadata> {
   }
 }
 
-async function generateThumbnail(videoPath: string): Promise<GeneratedThumbnail> {
+export async function generateThumbnail(videoPath: string): Promise<GeneratedThumbnail> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'zalocrm-video-thumb-'));
   const outputPath = path.join(dir, 'thumbnail.jpg');
 

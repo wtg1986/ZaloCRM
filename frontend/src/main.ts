@@ -5,6 +5,7 @@ import { router } from './router/index';
 import { vuetify } from './plugins/vuetify';
 import './assets/tokens.css';
 import './assets/main.css';
+import './assets/rbac-page.css';
 
 const app = createApp(App);
 app.use(createPinia());

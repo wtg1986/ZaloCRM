@@ -109,17 +109,17 @@ async function loadConversation(conversationId: string, orgId: string) {
   return { ...conversation, messages: [...conversation.messages].reverse() };
 }
 
-async function generateText(provider: string, apiKey: string, model: string, system: string, prompt: string) {
+async function generateText(provider: string, apiKey: string, model: string, system: string, prompt: string, maxTokens?: number) {
   const providerDef = getProviderConfig(provider);
   const baseUrl = providerDef?.baseUrl || '';
 
-  if (provider === 'anthropic') return generateWithAnthropic(baseUrl, apiKey, model, system, prompt);
-  if (provider === 'gemini') return generateWithGemini(baseUrl, apiKey, model, system, prompt);
+  if (provider === 'anthropic') return generateWithAnthropic(baseUrl, apiKey, model, system, prompt, maxTokens);
+  if (provider === 'gemini') return generateWithGemini(baseUrl, apiKey, model, system, prompt, maxTokens);
 
   /* OpenAI, Qwen, Kimi all use OpenAI-compatible chat/completions API */
-  if (provider === 'openai') return generateWithOpenaiCompat(`${baseUrl}/v1/chat/completions`, apiKey, model, system, prompt);
-  if (provider === 'qwen') return generateWithOpenaiCompat(`${baseUrl}/compatible-mode/v1/chat/completions`, apiKey, model, system, prompt);
-  if (provider === 'kimi') return generateWithOpenaiCompat(`${baseUrl}/v1/chat/completions`, apiKey, model, system, prompt);
+  if (provider === 'openai') return generateWithOpenaiCompat(`${baseUrl}/v1/chat/completions`, apiKey, model, system, prompt, maxTokens);
+  if (provider === 'qwen') return generateWithOpenaiCompat(`${baseUrl}/compatible-mode/v1/chat/completions`, apiKey, model, system, prompt, maxTokens);
+  if (provider === 'kimi') return generateWithOpenaiCompat(`${baseUrl}/v1/chat/completions`, apiKey, model, system, prompt, maxTokens);
 
   throw new Error(`Unsupported AI provider: ${provider}`);
 }
@@ -340,4 +340,155 @@ export async function parseAppointmentFromText(input: { orgId: string; text: str
     confidence,
     source: 'ai',
   };
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * AI Format Rich Text (2026-05-21) — anh paste 1 đoạn raw text (vd giới thiệu
+ * dự án bất động sản) → AI return {text, styles[]} format Zalo (bold/italic/
+ * color/size). Sale chỉ việc bấm gửi → KH nhận tin sinh động.
+ * ────────────────────────────────────────────────────────────────────────── */
+export interface ZaloRichStyle { st: string; start: number; len: number }
+export interface AiFormatResult { text: string; styles: ZaloRichStyle[]; source: 'ai' | 'fallback' }
+
+// 2026-05-21 v4 fix: switch từ offset-based sang phrase-based. AI bị off-by-one khi
+// đếm character với tiếng Việt diacritics + bullets. Format mới: AI trả chuỗi cần
+// highlight, BE tự indexOf để tính offset chính xác → robust 100%.
+const AI_FORMAT_SYSTEM_PROMPT = `Bạn là chuyên gia format tin nhắn bán hàng tiếng Việt cho Zalo. Nhận 1 đoạn text → trả JSON {"ranges": [...]} liệt kê các chuỗi cần highlight.
+
+OUTPUT SCHEMA:
+{
+  "ranges": [
+    {"phrase": "chuỗi cần highlight", "styles": ["b", "c_db342e"]},
+    ...
+  ]
+}
+
+QUY TẮC:
+1. "phrase" PHẢI là chuỗi GIỐNG NGUYÊN VĂN xuất hiện trong input (case-sensitive, đầy đủ dấu tiếng Việt). KHÔNG sửa, KHÔNG bỏ ký tự, KHÔNG thêm khoảng trắng thừa.
+2. "styles" là array các style code áp cho phrase đó.
+3. Mỗi phrase chỉ apply 1 lần (lần xuất hiện đầu tiên trong text). Nếu cần highlight 2 chỗ giống nhau → list 2 lần.
+4. KHÔNG wrap JSON trong markdown. Output JSON thuần.
+
+STYLE CODES:
+- "b" = đậm | "i" = nghiêng | "u" = gạch chân | "s" = gạch ngang
+- "c_db342e" = đỏ | "c_f27806" = cam | "c_15a85f" = xanh lá | "c_2962ff" = xanh dương
+
+NGUYÊN TẮC FORMAT (chọn lọc, không bôi quá nhiều):
+- Tên sản phẩm / dòng đầu nổi bật → ["b", "c_db342e"]
+- Số tiền / % giảm / giá → ["b", "c_db342e"]
+- Địa chỉ / vị trí → ["b", "c_f27806"]
+- Thời gian / deadline / khoảng cách phút → ["b", "c_db342e"]
+- USP / lợi ích chính → ["b", "c_15a85f"]
+- SĐT / hotline → ["b", "c_2962ff"]
+- Highlight quan trọng KHÁC → "b" only
+
+MAX 15 ranges per response. Chọn lọc highlight quan trọng nhất. KHÔNG bôi bullet "- " / "+ ".
+
+VÍ DỤ INPUT:
+"- Dự án Sunshine City tọa lạc tại Q.7\\n- Giá từ 2.5 tỷ (giảm 200tr)\\n- Hotline: 0901-123-456"
+
+VÍ DỤ OUTPUT:
+{"ranges":[
+  {"phrase":"Sunshine City","styles":["b","c_db342e"]},
+  {"phrase":"Q.7","styles":["b","c_f27806"]},
+  {"phrase":"2.5 tỷ","styles":["b","c_db342e"]},
+  {"phrase":"giảm 200tr","styles":["b","c_db342e"]},
+  {"phrase":"0901-123-456","styles":["b","c_2962ff"]}
+]}`;
+
+function isValidStyleCode(st: string): boolean {
+  return /^(b|i|u|s|c_[0-9a-fA-F]{6}|f_\d{1,3}|lst_[12])$/.test(st);
+}
+
+/**
+ * 2026-05-21 v4: Convert AI response ranges (phrase-based) → Zalo styles (offset-based).
+ * Robust với Vietnamese diacritics — KHÔNG dùng AI offset, dùng JS String.indexOf chuẩn.
+ *
+ * AI return: [{phrase: "Sunshine City", styles: ["b", "c_db342e"]}, ...]
+ * Convert: text.indexOf(phrase) → start. phrase.length → len.
+ *
+ * Edge cases:
+ * - phrase không tìm thấy trong text → bỏ qua (AI hallucinate phrase không tồn tại)
+ * - Cùng phrase xuất hiện 2 lần trong AI list → highlight 2 chỗ (first + next after first)
+ */
+function rangesToStyles(text: string, rangesRaw: unknown): ZaloRichStyle[] {
+  if (!Array.isArray(rangesRaw)) return [];
+  const styles: ZaloRichStyle[] = [];
+  // Track lần xuất hiện đã dùng để hỗ trợ phrase duplicate (highlight 2 chỗ).
+  const usedOffsets = new Map<string, number>(); // phrase → next searchFrom
+
+  for (const r of rangesRaw) {
+    if (!r || typeof r !== 'object') continue;
+    const phrase = String((r as { phrase: unknown }).phrase || '').trim();
+    const styleCodes = (r as { styles: unknown }).styles;
+    if (!phrase || !Array.isArray(styleCodes)) continue;
+
+    const searchFrom = usedOffsets.get(phrase) ?? 0;
+    const idx = text.indexOf(phrase, searchFrom);
+    if (idx < 0) continue; // phrase không tồn tại trong text → skip (AI hallucinated)
+    usedOffsets.set(phrase, idx + phrase.length); // lần sau search sau range này
+
+    const len = phrase.length;
+    for (const code of styleCodes) {
+      const st = String(code || '');
+      if (!isValidStyleCode(st)) continue;
+      styles.push({ st, start: idx, len });
+    }
+  }
+  return styles;
+}
+
+export async function aiFormatRichText(input: { orgId: string; rawText: string }): Promise<AiFormatResult> {
+  const text = (input.rawText || '').toString();
+  if (!text.trim()) return { text, styles: [], source: 'fallback' };
+
+  const currentConfig = await getAiConfig(input.orgId);
+  if (!currentConfig.enabled) return { text, styles: [], source: 'fallback' };
+
+  // Quota check (cùng counter với các AI task khác)
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+  const usedToday = await prisma.aiSuggestion.count({ where: { orgId: input.orgId, createdAt: { gte: startOfDay } } });
+  if (usedToday >= currentConfig.maxDaily) throw new Error('AI daily quota exceeded');
+
+  const apiKey = await getProviderApiKey(input.orgId, currentConfig.provider);
+  if (!apiKey) return { text, styles: [], source: 'fallback' };
+
+  try {
+    // 2026-05-21 fix: cap đủ cho JSON output dài (text + nhiều style overlap per range).
+    // Test với đoạn dự án 800 chars input → Gemini muốn trả ~7900 chars JSON ≈ 5000 tokens.
+    // Set 8000 = sát limit Gemini 2.5 Flash (8192) + buffer. Nếu vẫn cap → cần shrink prompt.
+    const raw = await generateText(currentConfig.provider, apiKey, currentConfig.model, AI_FORMAT_SYSTEM_PROMPT, text, 8000);
+
+    let parsed: { ranges?: unknown } | null = null;
+    try {
+      // Strip robust: bỏ ```json/```js/``` wrapper + BOM + leading text trước `{`.
+      let cleaned = raw.replace(/^﻿/, '').trim();
+      cleaned = cleaned.replace(/^```(?:json|javascript|js)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+      if (!cleaned.startsWith('{')) {
+        const firstBrace = cleaned.indexOf('{');
+        if (firstBrace > 0) cleaned = cleaned.slice(firstBrace);
+      }
+      parsed = JSON.parse(cleaned);
+    } catch (e) {
+      logger.warn(`[ai-format-rich] JSON parse fail (len=${raw.length}): ${raw.slice(0, 300)}... [end:${raw.slice(-100)}]`);
+      return { text, styles: [], source: 'fallback' };
+    }
+    // v4: phrase-based → BE tự indexOf → offsets chính xác 100%
+    const styles = rangesToStyles(text, parsed?.ranges);
+
+    // Save vào aiSuggestion để track quota
+    await saveSuggestion({
+      orgId: input.orgId,
+      conversationId: 'system',          // không gắn vào conv cụ thể
+      type: 'reply_draft',                // reuse type để tránh schema migration
+      content: JSON.stringify({ kind: 'format_rich', styles }),
+      confidence: 0.85,
+    }).catch(() => {});
+
+    return { text, styles, source: 'ai' };
+  } catch (err) {
+    logger.warn('[ai-format-rich] AI call failed:', err);
+    return { text, styles: [], source: 'fallback' };
+  }
 }

@@ -44,6 +44,8 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
     items: [
       { id: 'profile', label: 'Hồ sơ của tôi', icon: '👤', route: '/settings/personal/profile', permission: 'everyone' },
       { id: 'password', label: 'Đổi mật khẩu', icon: '🔑', route: '/settings/personal/password', permission: 'everyone' },
+      // Phase Riêng Tư 2026-05-22 — per-user PIN gate (Privacy phase)
+      { id: 'privacy', label: 'Riêng tư & PIN', icon: '🔒', route: '/settings/privacy', permission: 'everyone', aliases: ['privacy', 'pin', 'riêng tư', 'blur', 'nick chính'] },
       { id: 'notifications', label: 'Thông báo', icon: '🔔', route: '/settings/personal/notifications', permission: 'everyone', comingSoon: true },
       { id: 'theme', label: 'Giao diện', icon: '🎨', route: '/settings/personal/theme', permission: 'everyone', comingSoon: true },
       { id: 'sessions', label: 'Phiên đăng nhập', icon: '📱', route: '/settings/personal/sessions', permission: 'everyone', comingSoon: true },
@@ -51,6 +53,9 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
   },
 
   // ─── 🏢 TỔ CHỨC ──────────────────────────────────────
+  // Variant C 2026-05-22: gộp 'Tổ chức' + 'Nhân sự' cũ thành 1 group.
+  // RBAC phase shipped → "Sơ đồ tổ chức" replace "Đội nhóm", "Phân quyền" replace "Vai trò".
+  // Legacy routes /settings/team/* 301 redirect → /settings/rbac/* (xem router/index.ts).
   {
     id: 'org',
     label: 'Tổ chức',
@@ -58,21 +63,11 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
     permission: 'admin',
     items: [
       { id: 'profile', label: 'Hồ sơ tổ chức', icon: '🏢', route: '/settings/org/profile', permission: 'admin' },
-      { id: 'billing', label: 'Gói cước & Billing', icon: '💳', route: '/settings/org/billing', permission: 'owner', comingSoon: true },
+      { id: 'departments', label: 'Sơ đồ tổ chức', icon: '🌳', route: '/settings/rbac/departments', permission: 'admin', aliases: ['phòng ban', 'department', 'tree', 'đội nhóm', 'team'] },
+      { id: 'users', label: 'Nhân viên', icon: '👤', route: '/settings/rbac/users', permission: 'admin', aliases: ['user', 'sale', 'nhân sự'] },
+      { id: 'permission-groups', label: 'Phân quyền', icon: '🛡', route: '/settings/rbac/permission-groups', permission: 'owner', aliases: ['phân quyền', 'permission', 'role', 'vai trò', 'nhóm quyền'] },
       { id: 'audit', label: 'Audit log', icon: '📜', route: '/settings/org/audit', permission: 'owner', comingSoon: true },
-    ],
-  },
-
-  // ─── 👥 NHÂN SỰ ──────────────────────────────────────
-  {
-    id: 'team',
-    label: 'Nhân sự',
-    icon: '👥',
-    permission: 'admin',
-    items: [
-      { id: 'users', label: 'Nhân viên', icon: '👤', route: '/settings/team/users', permission: 'admin' },
-      { id: 'teams', label: 'Đội nhóm', icon: '👥', route: '/settings/team/teams', permission: 'admin' },
-      { id: 'roles', label: 'Vai trò & Phân quyền', icon: '🛡', route: '/settings/team/roles', permission: 'owner', aliases: ['phân quyền', 'permission', 'role'] },
+      { id: 'billing', label: 'Gói cước & Billing', icon: '💳', route: '/settings/org/billing', permission: 'owner', comingSoon: true },
     ],
   },
 

@@ -19,6 +19,10 @@ export async function contactSubResourceRoutes(app: FastifyInstance): Promise<vo
 
       const appointments = await prisma.appointment.findMany({
         where: { contactId: id, orgId: user.orgId },
+        include: {
+          assignedUser: { select: { id: true, fullName: true, email: true } },
+          statusChangedBy: { select: { id: true, fullName: true, email: true } },
+        },
         orderBy: { appointmentDate: 'desc' },
         take: 20,
       });

@@ -10,6 +10,8 @@ import { runAutomationRules } from '../automation/automation-service.js';
 import { applyContactAggregateFromMessage, applyContactInteraction, applyFriendAggregate } from '../contacts/contact-aggregate.js';
 import { onInboundMessage as onInboundScoring, onOutboundMessage as onOutboundScoring } from '../scoring/scoring-hooks.js';
 import { syncReminderFromMessage } from '../contacts/reminder-sync.js';
+import { uploadBuffer } from '../../shared/storage/minio-client.js';
+import { config } from '../../config/index.js';
 
 export interface IncomingMessage {
   accountId: string;
@@ -18,6 +20,7 @@ export interface IncomingMessage {
   content: string;
   contentType: string;      // text, image, sticker, video, voice, gif, link, file
   msgId: string;
+  cliMsgId?: string;        // Zalo client message id — cần cho api.undo (server check msgId+cliMsgId)
   timestamp: number;        // epoch ms
   isSelf: boolean;
   threadId: string;         // For user: contact UID. For group: group ID
@@ -64,6 +67,160 @@ export interface HandleMessageResult {
   conversationId: string;
   orgId: string;
   contactId: string | null;
+}
+
+const MIRROR_CONTENT_TYPES = new Set(['image', 'video', 'file', 'gif', 'voice', 'audio']);
+const MEDIA_URL_FIELDS = ['hdUrl', 'href', 'normalUrl', 'fileUrl', 'url', 'thumbUrl', 'thumb', 'thumbnail'] as const;
+
+function safeParseJsonObject(value: string): Record<string, unknown> | null {
+  if (!value.trim().startsWith('{')) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isLocalStorageUrl(value: string): boolean {
+  return value.startsWith(`${config.s3PublicUrl}/${config.s3Bucket}/`);
+}
+
+function isMirrorableUrl(value: unknown): value is string {
+  return typeof value === 'string' &&
+    /^https?:\/\//i.test(value) &&
+    !isLocalStorageUrl(value);
+}
+
+function fileNameFromUrl(url: string, contentType: string, mimeType: string): string {
+  try {
+    const parsed = new URL(url);
+    const last = parsed.pathname.split('/').filter(Boolean).pop() || '';
+    if (last.includes('.')) return decodeURIComponent(last);
+  } catch {
+    // fall through
+  }
+  const ext = mimeTypeToExtension(mimeType) || contentTypeToExtension(contentType);
+  return `zalo-${contentType || 'media'}${ext}`;
+}
+
+function mimeTypeToExtension(mimeType: string): string {
+  const [base] = mimeType.split(';');
+  switch (base.trim().toLowerCase()) {
+    case 'image/jpeg': return '.jpg';
+    case 'image/png': return '.png';
+    case 'image/webp': return '.webp';
+    case 'image/gif': return '.gif';
+    case 'video/mp4': return '.mp4';
+    case 'video/quicktime': return '.mov';
+    case 'video/webm': return '.webm';
+    case 'audio/mpeg': return '.mp3';
+    case 'audio/mp4': return '.m4a';
+    case 'audio/ogg': return '.ogg';
+    case 'application/pdf': return '.pdf';
+    default: return '';
+  }
+}
+
+function contentTypeToExtension(contentType: string): string {
+  switch (contentType) {
+    case 'image': return '.jpg';
+    case 'video': return '.mp4';
+    case 'gif': return '.gif';
+    case 'voice':
+    case 'audio': return '.mp3';
+    default: return '';
+  }
+}
+
+async function mirrorRemoteMediaUrl(url: string, contentType: string): Promise<string | null> {
+  const response = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  const mimeType = response.headers.get('content-type')?.split(';')[0] || guessMimeType(url, contentType);
+  const uploaded = await uploadBuffer(buffer, mimeType, fileNameFromUrl(url, contentType, mimeType));
+  return uploaded.url;
+}
+
+function guessMimeType(url: string, contentType: string): string {
+  const lower = url.toLowerCase();
+  if (lower.includes('.png')) return 'image/png';
+  if (lower.includes('.webp')) return 'image/webp';
+  if (lower.includes('.gif')) return 'image/gif';
+  if (lower.includes('.mp4')) return 'video/mp4';
+  if (lower.includes('.mov')) return 'video/quicktime';
+  if (lower.includes('.webm')) return 'video/webm';
+  if (lower.includes('.pdf')) return 'application/pdf';
+  if (contentType === 'image') return 'image/jpeg';
+  if (contentType === 'gif') return 'image/gif';
+  if (contentType === 'video') return 'video/mp4';
+  if (contentType === 'voice' || contentType === 'audio') return 'audio/mpeg';
+  return 'application/octet-stream';
+}
+
+async function mirrorInboundMediaContent(msg: IncomingMessage): Promise<string> {
+  if (!MIRROR_CONTENT_TYPES.has(msg.contentType) || !msg.content) return msg.content || '';
+
+  const parsed = safeParseJsonObject(msg.content);
+  if (!parsed) {
+    if (!isMirrorableUrl(msg.content)) return msg.content;
+    try {
+      return await mirrorRemoteMediaUrl(msg.content, msg.contentType) ?? msg.content;
+    } catch (err) {
+      logger.warn('[message-handler] inbound media mirror failed', {
+        contentType: msg.contentType,
+        url: msg.content,
+        err: (err as Error).message,
+      });
+      return msg.content;
+    }
+  }
+
+  const mirroredByUrl = new Map<string, string>();
+  for (const field of MEDIA_URL_FIELDS) {
+    const value = parsed[field];
+    if (!isMirrorableUrl(value)) continue;
+    try {
+      const mirrored = mirroredByUrl.get(value) ?? await mirrorRemoteMediaUrl(value, msg.contentType);
+      if (!mirrored) continue;
+      mirroredByUrl.set(value, mirrored);
+      parsed[field] = mirrored;
+    } catch (err) {
+      logger.warn('[message-handler] inbound media mirror failed', {
+        contentType: msg.contentType,
+        field,
+        url: value,
+        err: (err as Error).message,
+      });
+    }
+  }
+
+  const params = typeof parsed.params === 'string' ? safeParseJsonObject(parsed.params) : null;
+  if (params) {
+    for (const field of ['rawUrl', 'hd'] as const) {
+      const value = params[field];
+      if (!isMirrorableUrl(value)) continue;
+      try {
+        const mirrored = mirroredByUrl.get(value) ?? await mirrorRemoteMediaUrl(value, msg.contentType);
+        if (!mirrored) continue;
+        mirroredByUrl.set(value, mirrored);
+        params[field] = mirrored;
+      } catch (err) {
+        logger.warn('[message-handler] inbound media params mirror failed', {
+          contentType: msg.contentType,
+          field,
+          url: value,
+          err: (err as Error).message,
+        });
+      }
+    }
+    parsed.params = JSON.stringify(params);
+  }
+
+  return JSON.stringify(parsed);
 }
 
 export async function handleIncomingMessage(
@@ -113,9 +270,19 @@ export async function handleIncomingMessage(
       });
       if (recentDupe) {
         if (!recentDupe.zaloMsgId && msg.msgId) {
+          // Update cả zaloMsgIdNum để row CRM-sent giờ có numeric Snowflake → sort đúng
+          const dupNum = /^\d+$/.test(msg.msgId) ? BigInt(msg.msgId) : null;
           await prisma.message.update({
             where: { id: recentDupe.id },
-            data: { zaloMsgId: msg.msgId },
+            data: { zaloMsgId: msg.msgId, zaloMsgIdNum: dupNum },
+          }).catch(() => {});
+        }
+        // FIX 2026-05-21: row CRM-sent insert TRƯỚC khi nhận echo nên thiếu cliMsgId.
+        // Echo về có cliMsgId → backfill vào row dupe để undo hoạt động.
+        if (msg.cliMsgId) {
+          await prisma.message.update({
+            where: { id: recentDupe.id },
+            data: { zaloCliMsgId: msg.cliMsgId },
           }).catch(() => {});
         }
         logger.debug(`[message-handler] Skipping self echo: ${isAttachment ? 'attachment' : 'content'} match within 30s`);
@@ -125,15 +292,22 @@ export async function handleIncomingMessage(
 
     let message;
     try {
+      // zaloMsgIdNum = numeric form của Snowflake — primary sort key match Zalo Web.
+      // Parse fail → null (CRM-sent in-flight messages chưa có msgId).
+      const zaloMsgIdNum = msg.msgId && /^\d+$/.test(msg.msgId) ? BigInt(msg.msgId) : null;
+      const storedContent = await mirrorInboundMediaContent(msg);
       message = await prisma.message.create({
         data: {
           id: randomUUID(),
           conversationId: conversation.id,
           zaloMsgId: msg.msgId || null,
+          zaloMsgIdNum,
+          // 2026-05-21: cliMsgId Zalo client counter — cần cho api.undo
+          zaloCliMsgId: msg.cliMsgId || null,
           senderType: msg.isSelf ? 'self' : 'contact',
           senderUid: msg.senderUid,
           senderName: msg.senderName || null,
-          content: msg.content || '',
+          content: storedContent || '',
           contentType: msg.contentType || 'text',
           attachments: msg.attachments ?? [],
           quote: msg.quote ?? undefined,
@@ -144,9 +318,17 @@ export async function handleIncomingMessage(
         },
       });
     } catch (err: any) {
-      // P2002 = unique constraint violation → duplicate zaloMsgId, skip silently
+      // P2002 = unique constraint violation → duplicate zaloMsgId, skip silently.
+      // 2026-05-21: trước khi skip, backfill cliMsgId vào row existing nếu chưa có
+      // (case CRM-sent row insert TRƯỚC + listener echo về SAU mang cliMsgId thật).
       if (err?.code === 'P2002') {
-        logger.debug(`[message-handler] Skipping duplicate zaloMsgId=${msg.msgId}`);
+        if (msg.cliMsgId && msg.msgId) {
+          await prisma.message.updateMany({
+            where: { zaloMsgId: msg.msgId, zaloCliMsgId: null },
+            data: { zaloCliMsgId: msg.cliMsgId },
+          }).catch(() => {});
+        }
+        logger.debug(`[message-handler] Skipping duplicate zaloMsgId=${msg.msgId} (cliMsgId backfill attempted)`);
         return null;
       }
       throw err;
@@ -176,9 +358,17 @@ export async function handleIncomingMessage(
     if (msg.threadType !== 'group' && contactId) {
       void (async () => {
         try {
-          const { incrementDailyAggregate, messageEngagementInputs } =
+          const { incrementDailyAggregate, messageEngagementInputs, parseCallMeta } =
             await import('../engagement/engagement-service.js');
-          const signals = messageEngagementInputs(message.contentType, msg.isSelf);
+          // hasQuote: KH dùng quote-reply (Zalo "trả lời tin nhắn") → quote payload non-null/non-empty
+          const q = (msg as any).quote;
+          const hasQuote = q !== undefined && q !== null
+            && (typeof q !== 'object' || Object.keys(q).length > 0);
+          // callMeta: tách missed vs connected từ content.params
+          const callMeta = message.contentType === 'call'
+            ? parseCallMeta(msg.content, msg.isSelf)
+            : null;
+          const signals = messageEngagementInputs(message.contentType, msg.isSelf, hasQuote, callMeta);
 
           // customerInitiated: KH nhắn trước trong ngày (chỉ khi inbound + chưa có activity nào hôm nay)
           let customerInitiated = false;
@@ -204,6 +394,9 @@ export async function handleIncomingMessage(
             outboundMsg: signals.outbound,
             mediaShare: signals.mediaShare,
             voiceMsg: signals.voiceMsg,
+            call: signals.call,
+            missedCall: signals.missedCall,
+            quoteReply: signals.quoteReply,
             customerInitiated,
           });
         } catch (err) {
@@ -568,31 +761,62 @@ async function updateConversationAfterMessage(
   await prisma.conversation.update({ where: { id: conversationId }, data: updateData });
 }
 
-// Soft-delete a message by its Zalo message ID
-export async function handleMessageUndo(accountId: string, zaloMsgId: string): Promise<void> {
+/**
+ * Soft-delete a message by its Zalo references. Zalo undo event reference tin gốc qua
+ * 2 id song song — match cái nào ra trước thì update.
+ *   globalMsgIdNum: server-side Snowflake (match Message.zaloMsgIdNum BigInt)
+ *   cliMsgIdNum:    client-side counter (match Message.zaloMsgId String hoặc zaloMsgIdNum)
+ * Phải dùng `OR` vì Zalo có lúc chỉ trả 1 trong 2 (vd undo tin do nick khác gửi → chỉ globalMsgId).
+ */
+export async function handleMessageUndo(
+  accountId: string,
+  refs: { globalMsgIdNum: bigint | null; cliMsgIdNum: bigint | null },
+): Promise<string[]> {
   try {
+    const orWhere: Array<Record<string, unknown>> = [];
+    if (refs.globalMsgIdNum) orWhere.push({ zaloMsgIdNum: refs.globalMsgIdNum });
+    if (refs.cliMsgIdNum) {
+      // cliMsgId có thể nằm ở zaloCliMsgId (column mới 2026-05-21) hoặc zaloMsgIdNum cũ
+      orWhere.push({ zaloCliMsgId: refs.cliMsgIdNum.toString() });
+      orWhere.push({ zaloMsgIdNum: refs.cliMsgIdNum });
+      orWhere.push({ zaloMsgId: refs.cliMsgIdNum.toString() });
+    }
+    if (orWhere.length === 0) return [];
+
     const recalledAt = new Date();
+
+    // Fetch rows TRƯỚC khi update để biết id để emit socket sau.
+    const affected = await prisma.message.findMany({
+      where: { OR: orWhere, isDeleted: false },
+      select: { id: true, conversationId: true, zaloMsgId: true },
+    });
+    if (affected.length === 0) {
+      logger.warn(
+        `[message-handler] Undo: no message matched (account=${accountId}, globalMsgId=${refs.globalMsgIdNum}, cliMsgId=${refs.cliMsgIdNum})`,
+      );
+      return [];
+    }
+
     await prisma.message.updateMany({
-      where: { zaloMsgId: String(zaloMsgId) },
+      where: { id: { in: affected.map((m) => m.id) } },
       data: { isDeleted: true, deletedAt: recalledAt },
     });
 
-    // Update lastInteraction* on the affected contact(s)
-    const affected = await prisma.message.findMany({
-      where: { zaloMsgId: String(zaloMsgId) },
-      select: { id: true, conversationId: true },
-    });
     for (const m of affected) {
       void applyContactInteraction({
         conversationId: m.conversationId,
         type: 'message_recalled',
         occurredAt: recalledAt,
-        payload: { messageId: m.id, zaloMsgId: String(zaloMsgId) },
+        payload: { messageId: m.id, zaloMsgId: m.zaloMsgId },
       });
     }
 
-    logger.info(`[message-handler] Undo message ${zaloMsgId} for account ${accountId}`);
+    logger.info(
+      `[message-handler] Undo ${affected.length} message(s) (account=${accountId}, globalMsgId=${refs.globalMsgIdNum}) → ${affected.map((m) => m.id).join(',')}`,
+    );
+    return affected.map((m) => m.id);
   } catch (err) {
     logger.error('[message-handler] handleMessageUndo error:', err);
+    return [];
   }
 }

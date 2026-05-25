@@ -1,10 +1,13 @@
 <template>
-  <Teleport to="body">
-    <div v-if="appointment" class="panel-overlay" @click="$emit('close')" />
-    <aside class="apt-panel" :class="{ open: !!appointment }">
+  <!-- 2026-05-21: switched from fixed overlay (Teleport to body) to inline panel
+       as 3rd grid column in AppointmentsView. Was causing z-index conflicts +
+       content bleed-through. Mobile fallback remains overlay via CSS media query. -->
+  <aside v-if="appointment" class="apt-panel" :class="{ open: !!appointment }">
+    <div class="panel-overlay panel-overlay--mobile-only" @click="$emit('close')" />
+    <div class="apt-panel-inner">
       <template v-if="appointment">
         <div class="panel-head">
-          <div class="ev-color" :style="{ background: saleColor(ownerId(appointment)).bg }" />
+          <div class="ev-color" :style="{ background: typeBgColor(appointment.type) }" />
           <h3>{{ appointment.contact?.fullName || 'Lịch hẹn' }} — {{ typeLabel(appointment.type) }}</h3>
           <button class="close" @click="$emit('close')">✕</button>
         </div>
@@ -13,8 +16,17 @@
           <div class="panel-section">
             <h5>Khách hàng</h5>
             <div class="cust-card">
-              <div class="av" :style="{ background: saleColor(ownerId(appointment)).bg }">
-                {{ initials(appointment.contact?.fullName) }}
+              <div
+                class="av"
+                :style="contactAvatarUrl ? {} : { background: saleColor(ownerId(appointment)).bg }"
+              >
+                <img
+                  v-if="contactAvatarUrl"
+                  :src="contactAvatarUrl"
+                  alt=""
+                  @error="onAvatarError"
+                />
+                <template v-else>{{ initials(appointment.contact?.fullName) }}</template>
               </div>
               <div class="info">
                 <div class="name">{{ appointment.contact?.fullName || 'Chưa rõ' }}</div>
@@ -111,25 +123,28 @@
           >✓ Hoàn thành</button>
         </div>
       </template>
-    </aside>
-  </Teleport>
+    </div>
+  </aside>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
+import { api } from '@/api/index';
 import {
   saleColor,
   typeIcon,
   typeLabel,
+  typeBgColor,
   statusLabel,
   initials,
+  resolveContactAvatar,
   appointmentOwnerId as ownerId,
   appointmentOwnerName as ownerName,
   appointmentStart,
   appointmentEnd,
   type AppointmentEx as Appointment,
 } from '@/composables/appointment-helpers';
-import { formatInOrgTz } from '@/composables/use-org-timezone';
+import { formatInOrgTz, getOrgParts, weekdayInOrgTz } from '@/composables/use-org-timezone';
 
 const props = defineProps<{
   appointment: Appointment | null;
@@ -145,15 +160,50 @@ defineEmits<{
   (e: 'open-contact', a: Appointment): void;
 }>();
 
-const DOWS = ['Chủ nhật', 'Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7'];
+// 2026-05-21 Phase B-4: DOW + dd/mm/yyyy compute via org TZ (xem use-org-timezone.ts).
+// Trước: getDay/getDate/getMonth/getFullYear/getHours/getMinutes → browser local TZ.
+
+// Avatar resolve: ưu tiên data sẵn có trên appointment.contact (Contact.avatarUrl +
+// friends embed từ APPOINTMENT_INCLUDE). Nếu vẫn null → fetch /contacts/:id enrich.
+const enrichedAvatarUrl = ref<string | null>(null);
+const contactAvatarUrl = computed<string | null>(() => {
+  if (enrichedAvatarUrl.value) return enrichedAvatarUrl.value;
+  return resolveContactAvatar(props.appointment?.contact);
+});
+async function enrichAvatar(contactId: string) {
+  try {
+    const res = await api.get(`/contacts/${contactId}`);
+    const url = resolveContactAvatar(res.data);
+    if (url && props.appointment?.contact?.id === contactId) {
+      enrichedAvatarUrl.value = url;
+    }
+  } catch (err) {
+    console.warn('[detail-panel] avatar enrich failed', err);
+  }
+}
+function onAvatarError(e: Event) {
+  (e.target as HTMLImageElement).style.display = 'none';
+}
+// Reset + enrich khi đổi appointment
+watch(() => props.appointment?.id, (id) => {
+  enrichedAvatarUrl.value = null;
+  const c = props.appointment?.contact;
+  if (id && c?.id && !resolveContactAvatar(c)) {
+    enrichAvatar(c.id);
+  }
+}, { immediate: true });
 
 const timeRangeLabel = computed(() => {
   if (!props.appointment) return '';
   const s = appointmentStart(props.appointment);
   const e = appointmentEnd(props.appointment);
-  const sd = `${DOWS[s.getDay()]}, ${String(s.getDate()).padStart(2, '0')}/${String(s.getMonth() + 1).padStart(2, '0')}/${s.getFullYear()}`;
-  const st = `${String(s.getHours()).padStart(2, '0')}:${String(s.getMinutes()).padStart(2, '0')}`;
-  const et = `${String(e.getHours()).padStart(2, '0')}:${String(e.getMinutes()).padStart(2, '0')}`;
+  const sp = getOrgParts(s);
+  const ep = getOrgParts(e);
+  if (!sp || !ep) return '';
+  const dow = weekdayInOrgTz(s, undefined, 'long');
+  const sd = `${dow}, ${String(sp.day).padStart(2, '0')}/${String(sp.month).padStart(2, '0')}/${sp.year}`;
+  const st = `${String(sp.hour).padStart(2, '0')}:${String(sp.minute).padStart(2, '0')}`;
+  const et = `${String(ep.hour).padStart(2, '0')}:${String(ep.minute).padStart(2, '0')}`;
   return `${sd} · ${st}–${et}`;
 });
 
@@ -174,33 +224,47 @@ function formatRelative(iso: string): string {
 <style scoped>
 @import '@/components/automation/phase7/airtable.css';
 
-.panel-overlay {
-  position: fixed; inset: 0;
-  background: rgba(24,29,38,0.22);
-  z-index: 49;
-}
+/* Desktop: inline panel = 3rd grid column trong apt-body. Không fixed/overlay. */
 .apt-panel {
-  position: fixed;
-  top: var(--smax-topnav-h, 52px);
-  right: 0;
-  bottom: 0;
-  width: 420px;
-  max-width: 100vw;
+  position: relative;
+  width: 100%;
+  height: 100%;
   background: var(--at-canvas);
   border-left: 1px solid var(--at-hairline);
-  box-shadow: -16px 0 40px rgba(24,29,38,0.12);
-  transform: translateX(100%);
-  transition: transform .22s ease;
   display: flex;
   flex-direction: column;
-  z-index: 50;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   color: var(--at-body);
+  overflow: hidden;
 }
-.apt-panel.open { transform: translateX(0); }
+.apt-panel-inner {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+.panel-overlay--mobile-only { display: none; }
 
-@media (max-width: 768px) {
-  .apt-panel { width: 100vw; top: 0; }
+/* Mobile / narrow: fixed overlay với backdrop */
+@media (max-width: 900px) {
+  .apt-panel {
+    position: fixed;
+    top: var(--smax-topnav-h, 52px);
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: 100vw;
+    z-index: 1200;
+    border-left: none;
+    box-shadow: 0 -8px 32px rgba(24,29,38,0.16);
+  }
+  .panel-overlay--mobile-only {
+    display: block;
+    position: fixed;
+    inset: var(--smax-topnav-h, 52px) 0 0 0;
+    background: rgba(24,29,38,0.22);
+    z-index: -1;
+  }
 }
 
 /* Head: signature ribbon (4px) on top via .ev-color, then content */
@@ -264,13 +328,19 @@ function formatRelative(iso: string): string {
   align-items: center;
 }
 .cust-card .av {
-  width: 44px; height: 44px;
+  width: 48px; height: 48px;
   border-radius: var(--at-r-pill);
   color: var(--at-on-primary);
   display: grid; place-items: center;
   font-weight: 500;
-  font-size: 16px;
+  font-size: 17px;
   flex-shrink: 0;
+  overflow: hidden;
+}
+.cust-card .av img {
+  width: 100%; height: 100%; object-fit: cover;
+  border-radius: var(--at-r-pill);
+  display: block;
 }
 .cust-card .info { flex: 1; min-width: 0; }
 .cust-card .info .name {

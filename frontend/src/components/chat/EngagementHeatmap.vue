@@ -49,10 +49,10 @@
         </div>
       </div>
 
-      <!-- Breakdown -->
+      <!-- Breakdown — 6 signal groups anh chốt 2026-05-21 -->
       <div class="eh-breakdown" v-if="breakdown">
         <div class="bd-item">
-          <span class="bd-label">❤️ KH thả tim</span>
+          <span class="bd-label">❤️ Thả tim</span>
           <span class="bd-val">{{ breakdown.totalReactions }} lần</span>
         </div>
         <div class="bd-item">
@@ -60,16 +60,25 @@
           <span class="bd-val">{{ breakdown.replyRate }}%</span>
         </div>
         <div class="bd-item">
-          <span class="bd-label">🎤 Tin thoại</span>
-          <span class="bd-val">{{ breakdown.totalVoice }} lần</span>
+          <span class="bd-label">📞 Cuộc gọi</span>
+          <span class="bd-val">
+            {{ breakdown.totalCalls ?? 0 }} lần<span
+              v-if="(breakdown.totalMissedCalls ?? 0) > 0"
+              class="bd-val-sub"
+            > ({{ breakdown.totalMissedCalls }} nhỡ)</span>
+          </span>
         </div>
         <div class="bd-item">
-          <span class="bd-label">📷 Gửi ảnh/file</span>
+          <span class="bd-label">📎 Ảnh/file/video</span>
           <span class="bd-val">{{ breakdown.totalMedia }} lần</span>
         </div>
         <div class="bd-item">
-          <span class="bd-label">⚡ Ngày KH chủ động</span>
+          <span class="bd-label">⚡ KH chủ động</span>
           <span class="bd-val">{{ breakdown.daysInitiated }} ngày</span>
+        </div>
+        <div class="bd-item">
+          <span class="bd-label">↩️ Reply</span>
+          <span class="bd-val">{{ breakdown.totalQuoteReplies ?? 0 }} lần</span>
         </div>
       </div>
     </template>
@@ -92,6 +101,9 @@ interface TimelineCell {
   reactionCount: number;
   mediaShareCount: number;
   voiceMsgCount: number;
+  callCount: number;
+  missedCallCount: number;
+  quoteReplyCount: number;
   customerInitiated: boolean;
   dailyIntensity: number;
 }
@@ -102,6 +114,9 @@ interface Breakdown {
   totalReactions: number;
   totalMedia: number;
   totalVoice: number;
+  totalCalls: number;
+  totalMissedCalls: number;
+  totalQuoteReplies: number;
   daysInitiated: number;
   replyRate: number;
   reactionRate: number;
@@ -179,8 +194,11 @@ function cellTooltip(cell: TimelineCell): string {
   if (cell.reactionCount > 0) parts.push(`❤️ ${cell.reactionCount}`);
   if (cell.inboundMsgCount > 0) parts.push(`💬 KH ${cell.inboundMsgCount}`);
   if (cell.outboundMsgCount > 0) parts.push(`📤 Sale ${cell.outboundMsgCount}`);
+  if (cell.callCount > 0) parts.push(`📞 ${cell.callCount}`);
+  if (cell.missedCallCount > 0) parts.push(`📵 nhỡ ${cell.missedCallCount}`);
+  if (cell.quoteReplyCount > 0) parts.push(`↩️ ${cell.quoteReplyCount}`);
   if (cell.voiceMsgCount > 0) parts.push(`🎤 ${cell.voiceMsgCount}`);
-  if (cell.mediaShareCount > 0) parts.push(`📷 ${cell.mediaShareCount}`);
+  if (cell.mediaShareCount > 0) parts.push(`📎 ${cell.mediaShareCount}`);
   if (cell.customerInitiated) parts.push('⚡ KH nhắn trước');
   return parts.join(' · ');
 }
@@ -315,12 +333,26 @@ defineExpose({ refresh: fetchTimeline });
   margin-top: 10px;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px 14px;
+  gap: 6px 12px;
   font-size: 11.5px;
 }
-.bd-item { display: flex; justify-content: space-between; }
-.bd-label { color: #6B7785; }
-.bd-val { font-weight: 600; color: #1F2D3D; }
+.bd-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  white-space: nowrap;
+  min-width: 0;
+  gap: 6px;
+}
+.bd-label {
+  color: #6B7785;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.bd-val { font-weight: 600; color: #1F2D3D; flex: 0 0 auto; }
+.bd-val-sub { font-weight: 500; color: #97A0AC; font-size: 10.5px; }
 
 /* Loading skeleton */
 .eh-skeleton {

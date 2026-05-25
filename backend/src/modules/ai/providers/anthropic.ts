@@ -1,7 +1,7 @@
-export async function generateWithAnthropic(baseUrl: string, apiKey: string, model: string, system: string, prompt: string) {
+export async function generateWithAnthropic(baseUrl: string, apiKey: string, model: string, system: string, prompt: string, maxTokens = 600) {
   const url = `${baseUrl}/v1/messages`;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30_000);
+  const timeout = setTimeout(() => controller.abort(), 60_000);
   try {
     const response = await fetch(url, {
       method: 'POST',
@@ -13,7 +13,7 @@ export async function generateWithAnthropic(baseUrl: string, apiKey: string, mod
       },
       body: JSON.stringify({
         model,
-        max_tokens: 600,
+        max_tokens: maxTokens,
         system,
         messages: [{ role: 'user', content: prompt }],
       }),

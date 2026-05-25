@@ -7,7 +7,8 @@
          Lý do: Zalo tag là "ground truth" từ Zalo app (manage 1-chiều, sale ko đổi được),
          hiện đầu để sale focus context KH. Auto-tag (system-derived) đẩy cuối — phụ trợ. -->
 
-    <!-- 1. Zalo-managed tags (managedBy='zalo_sync') — sort theo ZaloLabel.order -->
+    <!-- 1. Zalo-managed tags (managedBy='zalo_sync') — sort theo ZaloLabel.order.
+         Logo Zalo brand SVG đứng trước, "Zalo" text badge góc phải trên. -->
     <span
       v-for="tag in zaloTags"
       :key="'zalo-' + tag"
@@ -15,7 +16,7 @@
       :style="{ '--tag-color': tagColor(tag) }"
       :title="`Tag Zalo Real — đổi/gỡ trên app Zalo, hệ thống tự cập nhật. ${findDef(tag)?.description || ''}`"
     >
-      <TagIcon :size="13" />
+      <ZaloBrandIcon :size="14" />
       <span>{{ cleanTagName(tag) }}</span>
     </span>
 
@@ -113,9 +114,9 @@
 import { ref, computed, onMounted, nextTick, watch } from 'vue';
 import { api } from '@/api/index';
 import { useToast } from '@/composables/use-toast';
-import TagIcon from '@/components/icons/TagIcon.vue';
 import { tagColor as lookupTagColor, cleanTagName } from '@/composables/use-crm-tag-defs';
 import { AUTO_TAG_DISPLAY, getAutoTagDef } from '@/constants/auto-tags';
+import ZaloBrandIcon from '@/components/icons/ZaloBrandIcon.vue';
 
 interface CrmTagDef {
   id: string;
@@ -350,9 +351,24 @@ onMounted(() => { void loadTagDefs(); });
   color: color-mix(in srgb, var(--tag-color) 75%, black);
   padding: 3px 10px;
   cursor: help;
+  position: relative;
 }
-.tag-pill.tag-zalo :deep(.tag-icon) {
-  color: var(--tag-color);
+/* "Zalo" text badge góc phải trên (parallel với AUTO badge cho auto-tag).
+ * Đôi với icon brand bên trong: badge = type indicator, icon = brand identity. */
+.tag-pill.tag-zalo::before {
+  content: 'Zalo';
+  position: absolute;
+  top: -7px;
+  right: -4px;
+  background: #0068FF;
+  color: white;
+  font-size: 7.5px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  padding: 1px 5px;
+  border-radius: 99px;
+  line-height: 1;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
 /* CRM tag: dùng CrmTag.color qua --tag-color, render tinted chip nhẹ. */

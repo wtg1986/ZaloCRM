@@ -10,7 +10,9 @@ datasource db {
 model Organization {
   id        String   @id @default(uuid())
   name      String
-  timezone  String   @default("Asia/Ho_Chi_Minh")
+  // Múi giờ mặc định của tổ chức (offset cố định, không tự DST). Format "+07:00" / "-05:00".
+  // Mặc định +07:00 (Việt Nam) để mọi timestamp render trong UI và log đều đồng nhất, dễ decode.
+  timezone  String   @default("+07:00")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -57,6 +59,17 @@ model Organization {
   automationBroadcasts AutomationBroadcast[]
   automationCampaigns  AutomationCampaign[]
   automationTasks      AutomationTask[]
+  // RBAC Phase Phân Quyền 2026-05-21
+  departments          Department[]
+  permissionGroups     PermissionGroup[]
+  // Phase ZaloAccounts redesign 2026-05-22 — status log uptime
+  zaloAccountStatusLog ZaloAccountStatusLog[]
+  // Phase metrics layer 2026-05-22 — phone search log
+  phoneSearchEvents    PhoneSearchEvent[]
+  // Phase Privacy v2 2026-05-23 — nick chuyên dùng GỬI system notification cho cả org.
+  // Admin pick bất kỳ nick connected. FK SET NULL khi nick bị xóa.
+  systemNotifyZaloAccountId String?      @map("system_notify_zalo_account_id")
+  systemNotifyNick          ZaloAccount? @relation("OrgSystemNotify", fields: [systemNotifyZaloAccountId], references: [id], onDelete: SetNull)
 
   @@map("organizations")
 }
@@ -82,7 +95,24 @@ model User {
   email        String   @unique
   passwordHash String   @map("password_hash")
   fullName     String   @map("full_name")
-  role         String   @default("member") // owner, admin, member
+  // RBAC Phase Phân Quyền 2026-05-21: legacy `role` còn giữ cho dual-read window 2 tuần,
+  // mã mới đọc `permissionGroupId`. Sau migration verify OK (~2 tuần) → drop legacy column.
+  role               String           @default("member") // legacy: owner, admin, member
+  permissionGroupId  String?          @map("permission_group_id")
+  permissionGroup    PermissionGroup? @relation(fields: [permissionGroupId], references: [id], onDelete: SetNull)
+  departmentMember   DepartmentMember?
+  // Phase Riêng Tư 2026-05-22 — PIN-gated visual privacy cho main nicks của user
+  privacyPinHash     String?          @map("privacy_pin_hash")
+  privacyFailedCount Int              @default(0) @map("privacy_failed_count")
+  privacyLockedUntil DateTime?        @map("privacy_locked_until")
+  privacySessions    UserPrivacySession[]
+  // Phase Privacy v2 2026-05-23 — hard cap số nick user được flip sang 'main' (privacyMode).
+  // Default 2, admin sửa qua /users/:id/max-privacy-nicks. BE reject 400 khi vượt.
+  maxPrivacyNicks    Int              @default(2) @map("max_privacy_nicks")
+  // Phase Privacy v2 2026-05-23 — nick "liên lạc nội bộ" — sale chọn 1 nick mình OWN làm
+  // địa chỉ nhận system notification (miss KH msg, mention, alert). FK SET NULL khi reassign owner.
+  internalContactZaloAccountId String? @map("internal_contact_zalo_account_id")
+  internalContactNick          ZaloAccount? @relation("UserInternalContact", fields: [internalContactZaloAccountId], references: [id], onDelete: SetNull)
   isActive     Boolean  @default(true) @map("is_active")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
@@ -110,6 +140,8 @@ model User {
   createdSequences          AutomationSequence[]   @relation("SequenceCreatedBy")
   createdTriggers           AutomationTrigger[]    @relation("TriggerCreatedBy")
   createdBroadcasts         AutomationBroadcast[]  @relation("BroadcastCreatedBy")
+  // Phase metrics layer 2026-05-22 — phone search by user
+  phoneSearchEvents         PhoneSearchEvent[]
 
   @@map("users")
 }
@@ -127,6 +159,10 @@ model ZaloAccount {
   proxyUrl        String?   @map("proxy_url") // per-account proxy (PR#11)
   sessionData     Json?     @map("session_data")
   lastConnectedAt DateTime? @map("last_connected_at")
+  // Phase Riêng Tư 2026-05-22: sale gắn nick là 'main' → blur content cho user khác,
+  // chỉ owner unlock PIN xem được. Default 'sub' (org public). Xem design doc:
+  // ~/.gstack/projects/zalocrm/thanh-private-mode-design-20260521.md
+  privacyMode     String    @default("sub") @map("privacy_mode")
   createdAt       DateTime  @default(now()) @map("created_at")
 
   org                Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -153,7 +189,47 @@ model ZaloAccount {
   lastFriendReqSentAt DateTime?            @map("last_friend_req_sent_at")
   lastMessageSentAt   DateTime?            @map("last_message_sent_at")
 
+  // Phase ZaloAccounts redesign 2026-05-22: status log để tính uptime thật.
+  // Xem design doc: ~/.gstack/projects/zalocrm/EVO-THANH-private-hs-design-20260522-184345.md
+  statusLogs       ZaloAccountStatusLog[]
+  // Phase metrics layer 2026-05-22 — phone search log per nick
+  phoneSearchEvents PhoneSearchEvent[]
+  // Phase Privacy v2 2026-05-23 — reverse relations
+  internalContactForUsers User[]         @relation("UserInternalContact")
+  systemNotifyForOrgs     Organization[] @relation("OrgSystemNotify")
+
   @@map("zalo_accounts")
+}
+
+// Phase ZaloAccounts redesign 2026-05-22 — event log + checkpoint hybrid.
+// MỖI lần status đổi (zaloPool emit) hook writeTransition() → close record cũ
+// (UPDATE endedAt=NOW WHERE endedAt IS NULL) + insert record mới (endedAt=NULL).
+// Cron 5p checkpoint dùng zaloPool.getAllStatuses() reconcile orphan open records
+// sau crash. Uptime = SUM(connected duration) / window × 100.
+model ZaloAccountStatusLog {
+  id        String    @id @default(uuid())
+  orgId     String    @map("org_id")
+  accountId String    @map("account_id")
+  // 'connected' | 'disconnected' | 'auth_failed' | 'qr_pending' | 'expired'
+  status    String
+  startedAt DateTime  @map("started_at")
+  // NULL = đang giữ status này. Đúng 1 record/account có endedAt=NULL ở mọi thời điểm.
+  endedAt   DateTime? @map("ended_at")
+  // 'login' | 'qr_scan' | 'reconnect_ok' | 'reconnect_failed' | 'disconnect'
+  // | 'auth_fail' | 'session_expired' | 'crash_recovery' | 'checkpoint' | 'manual'
+  reason    String?
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  account ZaloAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  // Query window uptime: WHERE accountId=? AND (endedAt IS NULL OR endedAt > since)
+  @@index([accountId, startedAt])
+  // Org-wide aggregate (team uptime)
+  @@index([orgId, startedAt])
+  // Find open record per account (partial index would be ideal — Prisma không hỗ trợ inline)
+  @@index([accountId, endedAt])
+  @@map("zalo_account_status_log")
 }
 
 // ACL: which users can access which Zalo accounts
@@ -312,7 +388,11 @@ model Contact {
   // Avg dailyIntensity 28 days (0-100). Snapshot quality.
   engagementScore     Int?      @map("engagement_score")
   engagementUpdatedAt DateTime? @map("engagement_updated_at")
-  // Computed priority score: lead × engagement × trend signals. Read by inbox triage.
+
+  // ── Phase 8.C: Priority Score (combined) ───────────────────────────────
+  // Formula: leadScore × 0.55 + engagementScore × 0.30 + trendBoost
+  // trendBoost: engagementTrend ≥ 20 → +10; ≤ -20 → -5; else 0
+  // Clamp 0-100. Recompute trên mỗi lead/engagement update + daily cron.
   priorityScore       Int?      @map("priority_score")
   priorityUpdatedAt   DateTime? @map("priority_updated_at")
 
@@ -326,6 +406,7 @@ model Contact {
   // Default sort cho ContactsView list: tương tác mới nhất lên đầu.
   // Cần index để tránh seq scan khi 4500+ contacts.
   @@index([orgId, lastActivity])
+  @@index([orgId, priorityScore(sort: Desc)])
   @@index([orgId, zaloUsername])
   @@index([orgId, mergedInto])
   @@index([orgId, hasZalo])
@@ -401,6 +482,12 @@ model Conversation {
   @@index([orgId, zaloAccountId, isReplied, lastMessageAt])
   @@index([orgId, zaloAccountId, lastMessageAt])
   @@index([orgId, tab, lastMessageAt])
+  // M-tier tab-switch fix (2026-05-21): index riêng cho tab Cá Nhân/Nhóm
+  // (filter theo threadType + accountId, sort lastMessageAt desc).
+  // Trước fix: planner seq-scan + filter post-index → 1-3s lag chuyển tab.
+  @@index([orgId, threadType, zaloAccountId, lastMessageAt(sort: Desc)])
+  // Tab Chính/Khác: filter tab + accountId, sort lastMessageAt desc.
+  @@index([orgId, tab, zaloAccountId, lastMessageAt(sort: Desc)])
   @@map("conversations")
 }
 
@@ -409,6 +496,10 @@ model Message {
   id              String    @id @default(uuid())
   conversationId  String    @map("conversation_id")
   zaloMsgId       String?   @map("zalo_msg_id")
+  // Numeric Snowflake từ Zalo server — primary sort key (match 100% Zalo Web).
+  // sentAt giữ làm display + fallback cho CRM-sent chưa echo. KHÔNG dùng sentAt làm
+  // primary order vì self-listen events đôi khi thiếu `ts` → Date.now() fallback lệch ~30s.
+  zaloMsgIdNum    BigInt?   @map("zalo_msg_id_num")
   senderType      String    @map("sender_type") // self, contact
   senderUid       String?   @map("sender_uid")
   senderName      String?   @map("sender_name")
@@ -421,8 +512,26 @@ model Message {
   albumTotal      Int?      @map("album_total") // total items in album
   isDeleted       Boolean   @default(false) @map("is_deleted")
   deletedAt       DateTime? @map("deleted_at")
+  // Edit message audit (2026-05-21) — zca-js không support edit thật, edit chỉ áp dụng trên CRM.
+  // Khi sửa: lưu content cũ vào originalContent (lần đầu) + set editedAt = now.
+  originalContent String?   @map("original_content")
+  editedAt        DateTime? @map("edited_at")
+  // Zalo client message id (2026-05-21) — KHÁC zaloMsgId (server snowflake). Cần cho api.undo
+  // (Zalo expect cả msgId + cliMsgId). Tin cũ trước migration chưa có column này → null.
+  zaloCliMsgId    String?   @map("zalo_cli_msg_id")
   sentAt          DateTime  @map("sent_at")
+  // Read receipts (2026-05-21 Wave 1+2 — wire `delivered_messages` + `seen_messages`
+  // SDK events). Cả 2 chỉ set cho tin OUTGOING (senderType='self'); KH-side luôn null.
+  //   deliveredAt — Zalo server confirm device KH đã nhận packet (1 tick xám)
+  //   seenAt      — KH mở conversation đọc tin (2 tick xanh)
+  deliveredAt     DateTime? @map("delivered_at")
+  seenAt          DateTime? @map("seen_at")
   repliedByUserId String?   @map("replied_by_user_id")
+  // Phase metrics layer 2026-05-22: phân biệt nguồn gửi cho automation rate-limit + dashboard.
+  // 'user' = sale gửi qua CRM UI HOẶC sync về từ Zalo native (default — backward compat)
+  // 'automation' = bot/sequence/broadcast/NBA suggest gửi qua engine
+  // 'system' = CRM internal (reminder card, system notice — chưa dùng, reserved)
+  sentVia         String    @default("user") @map("sent_via")
   createdAt       DateTime  @default(now()) @map("created_at")
 
   conversation Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
@@ -431,7 +540,36 @@ model Message {
 
   @@unique([conversationId, zaloMsgId])
   @@index([conversationId, albumKey])
+  // Composite index cho sort theo Zalo Snowflake — primary order khi list messages.
+  @@index([conversationId, zaloMsgIdNum(sort: Desc)])
+  // Phase metrics 2026-05-22: aggregate query per nick per day per category
+  @@index([conversationId, sentAt, senderType, sentVia])
   @@map("messages")
+}
+
+// Phase metrics layer 2026-05-22 — Phone search event log.
+// Mỗi lần POST /zalo-accounts/:id/find-user log 1 row. Phone hash SHA-256 cho privacy.
+// Dùng cho dashboard "Phone search today: total/found/notfound" + Automation rate-limit.
+model PhoneSearchEvent {
+  id         String   @id @default(uuid())
+  orgId      String   @map("org_id")
+  accountId  String   @map("account_id")   // nick nào search
+  userId     String?  @map("user_id")      // user trigger (null nếu automation)
+  phoneHash  String   @map("phone_hash")   // SHA-256 SĐT — privacy + dedup
+  // 'found_zalo' | 'no_zalo' | 'rate_limited' | 'error'
+  result     String
+  foundUid   String?  @map("found_uid")    // null khi result != 'found_zalo'
+  errorCode  String?  @map("error_code")
+  occurredAt DateTime @default(now()) @map("occurred_at")
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  account ZaloAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  user    User?        @relation(fields: [userId], references: [id])
+
+  @@index([accountId, occurredAt])
+  @@index([orgId, occurredAt])
+  @@index([phoneHash])
+  @@map("phone_search_events")
 }
 
 // Appointment scheduled for a contact
@@ -445,6 +583,14 @@ model Appointment {
   assignedUserId  String?  @map("assigned_user_id")
   appointmentDate DateTime @map("appointment_date")
   appointmentTime String?  @map("appointment_time")
+  // 2026-05-21 "Nhắc hẹn" refactor — anh chốt 1 modal cho create+edit:
+  //   title       — tiêu đề (default = "Gọi nhắc KH X")
+  //   durationMin — dự kiến dành thời gian (phút), endAt tính ngầm = startAt + duration
+  //   location    — địa điểm (5 preset chips + smart suggest từ title)
+  //   type        — 4 values: call | message | meeting | follow_up
+  title           String?
+  durationMin     Int      @default(15) @map("duration_min")
+  location        String?
   type            String?
   status          String   @default("scheduled") // scheduled, completed, cancelled, no_show
   notes           String?
@@ -1629,8 +1775,11 @@ model ContactEngagementDaily {
   inboundMsgCount   Int     @default(0) @map("inbound_msg_count")
   outboundMsgCount  Int     @default(0) @map("outbound_msg_count")
   reactionCount     Int     @default(0) @map("reaction_count")   // KH reaction trên tin sale
-  mediaShareCount   Int     @default(0) @map("media_share_count") // KH gửi ảnh/file/voice
+  mediaShareCount   Int     @default(0) @map("media_share_count") // KH gửi ảnh/video/file/voice/location/...
   voiceMsgCount     Int     @default(0) @map("voice_msg_count")  // KH gửi voice (subset của media)
+  callCount         Int     @default(0) @map("call_count")        // KH gọi voice/video — duration > 0 (connected)
+  missedCallCount   Int     @default(0) @map("missed_call_count")  // KH gọi nhỡ — duration = 0 (intent yếu hơn)
+  quoteReplyCount   Int     @default(0) @map("quote_reply_count") // KH quote-reply 1 tin của sale (signal mạnh)
   customerInitiated Boolean @default(false) @map("customer_initiated") // KH nhắn trước trong ngày
 
   // Derived intensity 0-100 (heatmap cell color)
@@ -1765,4 +1914,104 @@ model CustomerListEntry {
   @@index([phoneE164]) // hot index for cross-list dedup + reverse update
   @@index([phoneLocal])
   @@map("customer_list_entries")
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// RBAC PHASE PHÂN QUYỀN — 2026-05-21
+// Department tree (org structure) + PermissionGroup tree (what actions)
+// Reference: GetflyCRM model. Decisions locked ở
+// ~/.gstack/projects/zalocrm/thanh-rbac-m2-design-20260521.md
+// ════════════════════════════════════════════════════════════════════════
+
+model Department {
+  id            String   @id @default(uuid())
+  orgId         String   @map("org_id")
+  name          String
+  parentId      String?  @map("parent_id")
+  // Materialized path "/<rootId>/<midId>/<thisId>/" — query subtree bằng LIKE.
+  // Auto recompute bởi trigger Postgres recompute_department_path() khi insert/update parent_id.
+  path          String
+  depth         Int      @default(0) // 0 = root, max 4 (5 level total per anh chốt)
+  displayOrder  Int      @default(0) @map("display_order")
+  archivedAt    DateTime? @map("archived_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  org      Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  parent   Department?        @relation("DeptTree", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  children Department[]       @relation("DeptTree")
+  members  DepartmentMember[]
+
+  @@index([orgId, path])
+  @@index([parentId])
+  @@map("departments")
+}
+
+model DepartmentMember {
+  id           String   @id @default(uuid())
+  departmentId String   @map("department_id")
+  userId       String   @unique @map("user_id") // 1 user ∈ 1 dept (Q2 chốt)
+  // dept_role: leader / deputy / member. Partial unique index ensure
+  // tối đa 1 leader + 1 deputy mỗi dept (Q4 chốt).
+  deptRole     String   @default("member") @map("dept_role")
+  joinedAt     DateTime @default(now()) @map("joined_at")
+
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([departmentId, deptRole])
+  @@map("department_members")
+}
+
+model PermissionGroup {
+  id            String   @id @default(uuid())
+  orgId         String   @map("org_id")
+  name          String
+  parentId      String?  @map("parent_id") // tree UI grouping, mỗi node độc lập permission
+  isSystem      Boolean  @default(false) @map("is_system") // Admin = protected, không xóa
+  displayOrder  Int      @default(0) @map("display_order")
+  // FIX eng-review 2026-05-21: JSONB blob thay row-per-action (Issue 7).
+  // Shape: { "<resource>": { "access": true, "create": false, "view_all": true, ... } }
+  // 1 query lấy full matrix, parse in-memory, không N+1.
+  grants        Json     @default("{}")
+  archivedAt    DateTime? @map("archived_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  org      Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  parent   PermissionGroup?   @relation("PermGroupTree", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  children PermissionGroup[]  @relation("PermGroupTree")
+  users    User[]
+
+  @@index([orgId])
+  @@map("permission_groups")
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// PHASE RIÊNG TƯ — 2026-05-22
+// PIN-gated visual privacy cho main nicks của user.
+// Reference: ~/.gstack/projects/zalocrm/thanh-private-mode-design-20260521.md
+// ════════════════════════════════════════════════════════════════════════
+
+model UserPrivacySession {
+  id             String   @id @default(uuid())
+  userId         String   @map("user_id")
+  // Random 32-byte base64 token, set as HttpOnly cookie + sent qua axios interceptor (anh chốt Q3 Issue 3).
+  sessionToken   String   @unique @map("session_token")
+  unlockedAt     DateTime @default(now()) @map("unlocked_at")
+  expiresAt      DateTime @map("expires_at")
+  // Idle timeout 30 phút: client request đến → update lastActivityAt; nếu now() - lastActivityAt > 30m → server revoke.
+  lastActivityAt DateTime @default(now()) @map("last_activity_at")
+  ipHash         String?  @map("ip_hash")  // audit cross-user (hash chống PII leak)
+  // Phase Privacy v2 2026-05-23: raw IP để user thấy session DEVICE của chính mình (vd "192.168.1.200").
+  // BE strict scope: chỉ user xem session ownership của mình → không cross-user leak.
+  ipAddress      String?  @map("ip_address")
+  userAgent      String?  @map("user_agent")  // audit + render "Cốc Cốc" / "Chrome" etc
+  revokedAt      DateTime? @map("revoked_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([sessionToken])
+  @@index([userId, expiresAt])
+  @@map("user_privacy_sessions")
 }

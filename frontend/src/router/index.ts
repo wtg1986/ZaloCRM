@@ -82,10 +82,17 @@ const routes = [
       { path: 'org/billing', name: 'Settings.Billing',   component: () => import('@/views/settings/SettingsComingSoon.vue'), props: { feature: 'billing' } },
       { path: 'org/audit',   name: 'Settings.Audit',     component: () => import('@/views/settings/SettingsComingSoon.vue'), props: { feature: 'audit' } },
 
-      // 👥 Team
-      { path: 'team/users', name: 'Settings.Users', component: () => import('@/components/settings/UserManagement.vue') },
-      { path: 'team/teams', name: 'Settings.Teams', component: () => import('@/components/settings/TeamManagement.vue') },
-      { path: 'team/roles', name: 'Settings.Roles', component: () => import('@/views/settings/RolesPage.vue') },
+      // 👥 Team — Variant C menu reorg 2026-05-22: legacy team/* redirect → rbac/*
+      // Em giữ 3 route legacy nhưng redirect sang RBAC pages mới để không break deep link.
+      { path: 'team/users', redirect: '/settings/rbac/users' },
+      { path: 'team/teams', redirect: '/settings/rbac/departments' },
+      { path: 'team/roles', redirect: '/settings/rbac/permission-groups' },
+      // RBAC Phase Phân Quyền 2026-05-21 (HS internal, branch private-hs)
+      { path: 'rbac/departments',       name: 'Settings.RbacDepartments',       component: () => import('@/views/rbac/DepartmentsView.vue') },
+      { path: 'rbac/permission-groups', name: 'Settings.RbacPermissionGroups',  component: () => import('@/views/rbac/PermissionGroupsView.vue') },
+      { path: 'rbac/users',             name: 'Settings.RbacUsers',             component: () => import('@/views/rbac/UsersRbacView.vue') },
+      // Phase Riêng Tư 2026-05-22 — per-user privacy page (vào nhóm Cá nhân ở sidebar)
+      { path: 'privacy',                name: 'Settings.Privacy',               component: () => import('@/views/privacy/PrivacySettingsView.vue') },
 
       // ⚙ CRM Config
       { path: 'crm/statuses',    name: 'Settings.Statuses',    component: () => import('@/components/settings/StatusManagement.vue') },

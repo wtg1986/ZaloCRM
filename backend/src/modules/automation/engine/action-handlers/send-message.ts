@@ -204,12 +204,15 @@ export async function sendMessageHandler(ctx: ActionContext): Promise<ActionResu
         id: randomUUID(),
         conversationId: conversation.id,
         zaloMsgId: zaloMsgId || null,
+        zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
         senderType: 'self',
         senderUid: '',
         senderName: 'Bot-Auto',
         content: persistContent,
         contentType: persistContentType,
         sentAt: new Date(),
+        // Phase metrics 2026-05-22: bot gửi
+        sentVia: 'automation',
       },
       select: { id: true, content: true, contentType: true, sentAt: true },
     });

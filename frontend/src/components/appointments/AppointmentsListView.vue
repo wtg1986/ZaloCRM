@@ -4,7 +4,18 @@
       <div class="empty-icon">📅</div>
       <h3>Chưa có lịch hẹn</h3>
       <p>Lọc hiện tại không khớp lịch nào. Thử bỏ bớt filter hoặc tạo lịch hẹn mới.</p>
-      <button class="empty-btn" @click="$emit('create')">＋ Tạo lịch hẹn</button>
+      <button class="empty-btn" @click="$emit('create')">＋ Tạo nhắc hẹn</button>
+    </div>
+
+    <!-- 7-col header (chỉ hiện 1 lần ở top, sticky-ish) -->
+    <div v-if="appointments.length" class="list-header">
+      <div class="col col-time">Thời gian</div>
+      <div class="col col-customer">Khách hàng</div>
+      <div class="col col-title">Tiêu đề & Ghi chú</div>
+      <div class="col col-type">Loại</div>
+      <div class="col col-status">Trạng thái</div>
+      <div class="col col-owner">Sale</div>
+      <div class="col col-actions"></div>
     </div>
 
     <div v-for="group in grouped" :key="group.iso" class="group">
@@ -16,15 +27,29 @@
         v-for="a in group.items"
         :key="a.id"
         class="row"
-        :style="{ borderLeftColor: saleColor(ownerId(a)).bg }"
+        :class="rowUrgency(a)"
+        :style="{ borderLeftColor: rowUrgency(a) === 'overdue' ? '#dc2626' : saleColor(ownerId(a)).bg }"
         @click="$emit('select-appointment', a)"
       >
-        <div class="time">
+        <!-- Col 1: Thời gian -->
+        <div class="col col-time">
           {{ fmtTime(a) }}
-          <span class="dur">{{ a.durationMin || 30 }} phút</span>
+          <span class="dur">{{ a.durationMin || 15 }} phút</span>
         </div>
-        <div class="customer">
-          <div class="av" :style="{ background: saleColor(ownerId(a)).bg }">{{ initials(a.contact?.fullName) }}</div>
+        <!-- Col 2: Avatar + tên KH + SDT -->
+        <div class="col col-customer">
+          <div
+            class="av"
+            :style="resolveContactAvatar(a.contact) ? {} : { background: saleColor(ownerId(a)).bg }"
+          >
+            <img
+              v-if="resolveContactAvatar(a.contact)"
+              :src="resolveContactAvatar(a.contact) || ''"
+              alt=""
+              @error="(e) => { (e.target as HTMLImageElement).style.display = 'none' }"
+            />
+            <template v-else>{{ initials(a.contact?.fullName) }}</template>
+          </div>
           <div class="info">
             <div class="name">
               {{ a.contact?.fullName || 'Khách hàng' }}
@@ -32,32 +57,36 @@
             </div>
             <div class="sub">
               <span v-if="a.contact?.phone">📱 {{ a.contact.phone }}</span>
-              <span v-if="a.contact?.zaloUid"> · {{ a.contact.zaloUid }}</span>
             </div>
-            <!-- mobile-only inline meta -->
+            <!-- mobile-only inline meta (desktop hide qua media query) -->
             <div class="mobile-meta">
               <span class="pill type">{{ typeIcon(a.type) }} {{ typeLabel(a.type) }}</span>
               <span class="pill" :class="`status-${a.status}`">{{ statusLabel(a.status) }}</span>
-              <span class="src-icon" :class="a.source">{{ a.source === 'zalo' ? 'Z' : 'M' }}</span>
               <span class="av-mini" :style="{ background: saleColor(ownerId(a)).bg }">{{ initials(ownerName(a)) }}</span>
             </div>
           </div>
         </div>
-        <div class="source">
-          <span class="src-icon" :class="a.source">{{ a.source === 'zalo' ? 'Z' : 'M' }}</span>
-          {{ a.source === 'zalo' ? 'Auto từ chat Zalo' : 'Tạo thủ công' }}
+        <!-- Col 3: Tiêu đề nhắc hẹn + Note (2 dòng) -->
+        <div class="col col-title">
+          <div class="title-text">{{ (a as any).title || '(Chưa có tiêu đề)' }}</div>
+          <div class="note-text" v-if="a.notes">{{ a.notes }}</div>
+          <div class="note-text muted" v-else>—</div>
         </div>
-        <div class="type-cell">
+        <!-- Col 4: Loại -->
+        <div class="col col-type">
           <span class="pill type">{{ typeIcon(a.type) }} {{ typeLabel(a.type) }}</span>
         </div>
-        <div>
+        <!-- Col 5: Trạng thái -->
+        <div class="col col-status">
           <span class="pill" :class="`status-${a.status}`">{{ statusLabel(a.status) }}</span>
         </div>
-        <div class="owner">
+        <!-- Col 6: Sale -->
+        <div class="col col-owner">
           <span class="av-mini" :style="{ background: saleColor(ownerId(a)).bg }">{{ initials(ownerName(a)) }}</span>
           <span class="owner-name">{{ shortName(ownerName(a)) }}</span>
         </div>
-        <div class="actions" @click.stop>
+        <!-- Col 7: Actions -->
+        <div class="col col-actions" @click.stop>
           <button
             v-if="a.source === 'zalo' && a.conversationId"
             title="Mở chat Zalo"
@@ -83,12 +112,14 @@ import {
   typeLabel,
   statusLabel,
   initials,
+  resolveContactAvatar,
   appointmentOwnerId as ownerId,
   appointmentOwnerName as ownerName,
   appointmentStart,
   appointmentEnd,
   type AppointmentEx as Appointment,
 } from '@/composables/appointment-helpers';
+import { orgDayKey, getOrgParts, weekdayInOrgTz } from '@/composables/use-org-timezone';
 
 const props = defineProps<{
   appointments: Appointment[];
@@ -101,13 +132,31 @@ defineEmits<{
   (e: 'open-chat', a: Appointment): void;
 }>();
 
+// 2026-05-21 Phase B-2: group/compare ngày theo org TZ thay vì browser local.
 function isoDay(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return orgDayKey(d);
+}
+
+/**
+ * Urgency tier cho row tint:
+ *   overdue  → bg đỏ nhạt, border-left đỏ (quá hạn + chưa xử lý)
+ *   upcoming → giữ neutral, border-left = saleColor
+ *   done     → opacity 0.65, gạch ngang time
+ * Effective overdue = status='overdue' HOẶC status='scheduled' nhưng đã qua now
+ * (cron flip mỗi 30 phút có lag → UI phải real-time hơn).
+ */
+function rowUrgency(a: Appointment): 'overdue' | 'upcoming' | 'done' {
+  if (a.status === 'completed' || a.status === 'cancelled' || a.status === 'no_show') return 'done';
+  if (a.status === 'overdue') return 'overdue';
+  // scheduled: check effective overdue
+  if (a.status === 'scheduled' && new Date(a.appointmentDate).getTime() < Date.now()) return 'overdue';
+  return 'upcoming';
 }
 
 function fmtTime(a: Appointment): string {
-  const d = appointmentStart(a);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const p = getOrgParts(appointmentStart(a));
+  if (!p) return '';
+  return `${String(p.hour).padStart(2, '0')}:${String(p.minute).padStart(2, '0')}`;
 }
 
 function shortName(name: string): string {
@@ -116,16 +165,19 @@ function shortName(name: string): string {
 }
 
 function dayLabel(d: Date): string {
-  const DOWS = ['Chủ nhật', 'Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7'];
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const tmr = new Date(today); tmr.setDate(today.getDate() + 1);
-  const yest = new Date(today); yest.setDate(today.getDate() - 1);
-  const dayMid = new Date(d); dayMid.setHours(0, 0, 0, 0);
+  // Phase B-2: today/tomorrow/yesterday so theo org TZ + DOW + dd/mm/yyyy theo org TZ.
+  const todayKey = orgDayKey(new Date());
+  const tmrKey = orgDayKey(new Date(Date.now() + 86_400_000));
+  const yestKey = orgDayKey(new Date(Date.now() - 86_400_000));
+  const dKey = orgDayKey(d);
+  const p = getOrgParts(d);
+  if (!p) return '';
   let prefix = '';
-  if (dayMid.getTime() === today.getTime()) prefix = 'Hôm nay · ';
-  else if (dayMid.getTime() === tmr.getTime()) prefix = 'Mai · ';
-  else if (dayMid.getTime() === yest.getTime()) prefix = 'Hôm qua · ';
-  return `${prefix}${DOWS[d.getDay()]}, ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+  if (dKey === todayKey) prefix = 'Hôm nay · ';
+  else if (dKey === tmrKey) prefix = 'Mai · ';
+  else if (dKey === yestKey) prefix = 'Hôm qua · ';
+  const dow = weekdayInOrgTz(d, undefined, 'long');
+  return `${prefix}${dow}, ${String(p.day).padStart(2, '0')}/${String(p.month).padStart(2, '0')}/${p.year}`;
 }
 
 function countConflicts(items: Appointment[]): number {
@@ -225,10 +277,29 @@ const grouped = computed(() => {
   color: var(--at-ink);
 }
 
-/* List row — Airtable card style */
+/* List header — 7 columns: Time | Customer | Title+Note | Type | Status | Sale | Actions */
+.list-header {
+  display: grid;
+  grid-template-columns: 90px 220px 1fr 130px 130px 130px 96px;
+  align-items: center;
+  gap: var(--at-s-sm);
+  padding: 10px var(--at-s-sm);
+  background: var(--at-surface-soft);
+  border: 1px solid var(--at-hairline);
+  border-radius: var(--at-r-md);
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--at-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.list-header .col { padding: 0 4px; }
+
+/* List row — Airtable card style, match header grid */
 .row {
   display: grid;
-  grid-template-columns: 80px 1fr 200px 130px 130px 110px 88px;
+  grid-template-columns: 90px 220px 1fr 130px 130px 130px 96px;
   align-items: center;
   gap: var(--at-s-sm);
   background: var(--at-canvas);
@@ -242,32 +313,67 @@ const grouped = computed(() => {
 }
 .row:active { background: var(--at-surface-soft); }
 
-.time {
+/* Urgency tier tint — overdue (đỏ nhạt) / upcoming (neutral) / done (mờ).
+   Border-left vẫn giữ saleColor (do inline style override), trừ overdue được override
+   thành đỏ ở template để cảnh báo mạnh hơn. */
+.row.overdue {
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+.row.overdue .col-time { color: #dc2626; font-weight: 600; }
+.row.done {
+  opacity: 0.65;
+  background: #f8fafc;
+}
+.row.done .col-time { text-decoration: line-through; color: #64748b; }
+.row.done .col-title .title-text { color: var(--at-muted); }
+.row .col { padding: 0 4px; min-width: 0; }
+.col-time { display: flex; flex-direction: column; gap: 2px; }
+.col-customer { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.col-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.col-title .title-text {
+  font-size: 13px; font-weight: 500; color: var(--at-ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.col-title .note-text {
+  font-size: 11.5px; color: var(--at-body);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.col-title .note-text.muted { color: var(--at-muted); font-style: italic; }
+.col-owner { display: flex; align-items: center; gap: 6px; }
+.col-actions { display: flex; gap: 4px; justify-content: flex-end; }
+
+.col-time {
   font-weight: 500;
   font-size: 14px;
   color: var(--at-ink);
   font-family: ui-monospace, 'SF Mono', Consolas, monospace;
 }
-.time .dur {
+.col-time .dur {
   font-size: 10px;
   color: var(--at-muted);
   font-weight: 500;
-  display: block;
+  font-family: 'Inter', sans-serif;
   margin-top: 1px;
 }
 
-.customer { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.customer .av {
-  width: 32px; height: 32px;
+.col-customer .av {
+  width: 36px; height: 36px;
   border-radius: var(--at-r-pill);
   color: var(--at-on-primary);
   display: grid; place-items: center;
   font-weight: 500;
   font-size: 12px;
   flex-shrink: 0;
+  overflow: hidden;
 }
-.customer .info { min-width: 0; }
-.customer .info .name {
+.col-customer .av img {
+  width: 100%; height: 100%; object-fit: cover;
+  border-radius: var(--at-r-pill);
+  display: block;
+}
+.col-customer .info { min-width: 0; flex: 1; }
+.col-customer .info .name {
   font-weight: 500;
   color: var(--at-ink);
   font-size: 13.5px;
@@ -275,12 +381,12 @@ const grouped = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.customer .info .zalo-tag {
+.col-customer .info .zalo-tag {
   font-size: 10px;
   color: var(--at-muted);
   letter-spacing: 0.06em;
 }
-.customer .info .sub {
+.col-customer .info .sub {
   font-size: 11.5px;
   color: var(--at-muted);
   margin-top: 1px;
@@ -289,7 +395,7 @@ const grouped = computed(() => {
   text-overflow: ellipsis;
 }
 
-/* Source col */
+/* Source col (legacy, not used in 7-col layout but still styled if appears) */
 .source {
   font-size: 12px;
   color: var(--at-body);
@@ -354,26 +460,31 @@ const grouped = computed(() => {
 }
 .actions button:active { background: var(--at-surface-soft); border-color: var(--at-hairline); }
 
+@media (max-width: 1280px) {
+  .list-header, .row { grid-template-columns: 80px 200px 1fr 120px 120px 110px 90px; gap: 8px; }
+}
 @media (max-width: 1100px) {
-  .row { grid-template-columns: 70px 1fr 130px 120px 110px 90px 80px; gap: 8px; }
-  .source { font-size: 11px; }
+  .list-header { display: none; }
+  .row { grid-template-columns: 70px 1fr 130px 110px 100px 90px 80px; gap: 6px; font-size: 12px; }
+  .col-title { display: none; } /* tiêu đề+note merge vào sub của KH */
 }
 
 .mobile-meta { display: none; }
 
 @media (max-width: 900px) {
   .apt-list { padding: 10px 12px 20px; }
+  .list-header { display: none; }
   .row {
     grid-template-columns: 60px 1fr auto;
     row-gap: 4px;
   }
-  .row .time { align-self: start; }
-  .row .customer { min-width: 0; }
-  .row .customer .info .name { font-size: 13px; }
-  .row .source,
-  .row .type-cell,
-  .row > div:nth-child(5),
-  .row .owner {
+  .row .col-time { align-self: start; }
+  .row .col-customer { min-width: 0; }
+  .row .col-customer .info .name { font-size: 13px; }
+  .row .col-title,
+  .row .col-type,
+  .row .col-status,
+  .row .col-owner {
     display: none;
   }
   .mobile-meta {
@@ -389,7 +500,7 @@ const grouped = computed(() => {
 
 @media (max-width: 600px) {
   .row { padding: 8px 10px; }
-  .row .customer .av { width: 30px; height: 30px; font-size: 11px; }
-  .time { font-size: 13px; }
+  .row .col-customer .av { width: 33px; height: 33px; font-size: 11px; }
+  .col-time { font-size: 13px; }
 }
 </style>

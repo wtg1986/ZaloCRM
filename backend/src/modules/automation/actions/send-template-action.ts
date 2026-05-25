@@ -54,12 +54,15 @@ export async function sendTemplateAction(input: {
       id: randomUUID(),
       conversationId: input.conversationId,
       zaloMsgId: zaloMsgId || null,
+      zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
       senderType: 'self',
       senderUid: null,
       senderName: 'Automation',
       content,
       contentType: 'text',
       sentAt: new Date(),
+      // Phase metrics 2026-05-22: bot gửi
+      sentVia: 'automation',
     },
   });
 

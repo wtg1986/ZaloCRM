@@ -10,150 +10,93 @@
         variant="tonal"
         color="primary"
         rounded
-        @click="showQuickDialog = true"
+        @click="openEditor(null)"
       >
         <v-icon size="14" class="mr-1">mdi-plus</v-icon>
         Tạo
       </v-btn>
     </div>
 
-    <!-- Modal "Tạo nhắc hẹn" — dùng AppointmentQuickDialog để UX nhất quán với
-         popup từ tab Ghi chú / từ AI-parse note. KHÔNG inline form ở đây nữa
-         để tránh duplicate UI logic. -->
-    <AppointmentQuickDialog
-      v-model="showQuickDialog"
-      :contact-id="contactId"
-      :contact-name="contactName"
-      header="📅 Tạo nhắc hẹn"
-      @created="onCreated"
+    <!-- Modal "Nhắc hẹn" — AppointmentEditor unified với trang /appointments + edit mode.
+         Tạo mới: editingApt=null. Sửa: editingApt = apt (modal mở edit mode). -->
+    <AppointmentEditor
+      v-model="showEditor"
+      :appointment="editingApt as any"
+      :prefill-contact="contactId && !editingApt ? {
+        id: contactId,
+        fullName: contactName || null,
+        phone: null,
+        zaloUid: null,
+        zaloUsername: null,
+      } : null"
+      :current-user-id="currentUserId"
+      @created="onSaved"
+      @updated="onSaved"
     />
 
-    <!-- Appointment list — overdue trên cùng, scheduled middle, done bottom -->
+    <!-- Appointment list — overdue trên cùng, scheduled middle, done bottom.
+         Card layout kế thừa Airtable design từ AppointmentsListView. -->
     <div
       v-for="apt in sortedAppointments"
       :key="apt.id"
       class="apt-row"
       :class="aptRowClass(apt)"
     >
-      <div v-if="editingId !== apt.id">
-        <!-- Row 1: source badge + status -->
-        <div class="d-flex align-center mb-1">
-          <v-chip
-            v-if="apt.source === 'zalo'"
-            size="x-small"
-            color="info"
-            variant="tonal"
-            prepend-icon="mdi-bell-ring"
-            class="mr-1"
-          >
-            {{ apt.emoji || '🔔' }} Zalo
-          </v-chip>
-          <v-chip
-            v-else
-            size="x-small"
-            color="primary"
-            variant="tonal"
-            prepend-icon="mdi-pencil-outline"
-            class="mr-1"
-          >
-            CRM
-          </v-chip>
-          <v-spacer />
-          <v-chip
-            size="x-small"
-            :color="statusColor(apt.status)"
-            variant="tonal"
-          >
-            {{ statusLabel(apt.status) }}
-          </v-chip>
-        </div>
-
-        <!-- Row 2: date/time + edit -->
-        <div class="d-flex align-center">
-          <div class="flex-grow-1">
-            <div class="apt-datetime">
-              {{ formatAptDate(apt.appointmentDate) }}
-              <span class="apt-time">· {{ formatAptTime(apt.appointmentDate) }}</span>
-            </div>
-            <div v-if="apt.notes" class="apt-notes">{{ apt.notes }}</div>
-          </div>
-          <v-btn icon size="x-small" variant="text" color="primary" @click="startEdit(apt)">
-            <v-icon size="14">mdi-pencil</v-icon>
-          </v-btn>
-        </div>
-
-        <!-- Row 3: quick action buttons (chỉ show khi status còn ở scheduled/overdue) -->
-        <div v-if="canQuickAction(apt)" class="apt-quick-actions">
-          <v-btn
-            size="x-small"
-            variant="tonal"
-            color="success"
-            prepend-icon="mdi-check"
-            :loading="changingId === apt.id && changingTo === 'completed'"
-            @click="quickChangeStatus(apt, 'completed')"
-          >Hoàn thành</v-btn>
-          <v-btn
-            size="x-small"
-            variant="tonal"
-            color="error"
-            prepend-icon="mdi-account-cancel-outline"
-            :loading="changingId === apt.id && changingTo === 'no_show'"
-            @click="quickChangeStatus(apt, 'no_show')"
-          >Không đến</v-btn>
-          <v-btn
-            size="x-small"
-            variant="text"
-            color="grey"
-            prepend-icon="mdi-close"
-            :loading="changingId === apt.id && changingTo === 'cancelled'"
-            @click="quickChangeStatus(apt, 'cancelled')"
-          >Huỷ</v-btn>
-        </div>
-
-        <!-- Audit line: hiển thị ai đổi status + lúc nào -->
-        <div v-if="apt.statusChangedBy && apt.status !== 'scheduled' && apt.status !== 'overdue'" class="apt-audit">
-          <v-icon size="11">mdi-account-check-outline</v-icon>
-          {{ apt.statusChangedBy.fullName || apt.statusChangedBy.email }}
-          <span v-if="apt.statusChangedAt">· {{ formatRelativeTime(apt.statusChangedAt) }}</span>
-        </div>
+      <!-- Row 1: source badge + type chip + status pill -->
+      <div class="apt-top">
+        <span class="apt-tag" :class="apt.source === 'zalo' ? 'tag-zalo' : 'tag-crm'">
+          {{ apt.source === 'zalo' ? `${apt.emoji || '🔔'} Zalo` : 'CRM' }}
+        </span>
+        <span v-if="apt.type" class="apt-type-pill">{{ typeIcon(apt.type) }} {{ typeLabel(apt.type) }}</span>
+        <span class="apt-status-pill" :class="`s-${effectiveStatus(apt)}`">
+          {{ statusLabel(effectiveStatus(apt)) }}
+        </span>
+        <button class="apt-edit-btn" title="Sửa nhắc hẹn" @click="openEditor(apt)">
+          ✎
+        </button>
       </div>
 
-      <!-- Edit mode -->
-      <div v-else>
-        <v-text-field
-          v-model="editForm.datetime"
-          label="Thời gian"
-          type="datetime-local"
-          density="compact"
-          variant="outlined"
-          hide-details
-          class="mb-2"
-        />
-        <v-text-field
-          v-model="editForm.notes"
-          label="Ghi chú"
-          density="compact"
-          variant="outlined"
-          hide-details
-          class="mb-2"
-        />
-        <v-select
-          v-model="editForm.status"
-          :items="statusOptions"
-          item-title="title"
-          item-value="value"
-          label="Trạng thái"
-          density="compact"
-          variant="outlined"
-          hide-details
-          class="mb-2"
-        />
-        <div class="d-flex gap-1">
-          <v-btn size="small" color="warning" :loading="saving" @click="submitEdit(apt.id)">
-            Lưu
-          </v-btn>
-          <v-btn size="small" variant="text" @click="editingId = null">Hủy</v-btn>
-        </div>
+      <!-- Row 2: tiêu đề (font 500, có icon loại nếu có) -->
+      <div v-if="apt.title" class="apt-title">{{ apt.title }}</div>
+      <div v-else class="apt-title muted">(Chưa có tiêu đề)</div>
+
+      <!-- Row 3: time + duration line -->
+      <div class="apt-time-line">
+        <span class="apt-datetime">
+          {{ formatAptDate(apt.appointmentDate) }} · {{ formatAptTime(apt.appointmentDate) }}
+        </span>
+        <span class="apt-dur">· {{ apt.durationMin || 15 }}p</span>
+      </div>
+
+      <!-- Row 4: meta — location, sale, notes -->
+      <div v-if="apt.location || apt.assignedUser" class="apt-meta">
+        <span v-if="apt.location" class="apt-loc">📍 {{ apt.location }}</span>
+        <span v-if="apt.assignedUser" class="apt-sale">👤 {{ apt.assignedUser.fullName || apt.assignedUser.email }}</span>
+      </div>
+      <div v-if="apt.notes" class="apt-notes">{{ apt.notes }}</div>
+
+      <!-- Row 5: quick action buttons (scheduled/overdue) -->
+      <div v-if="canQuickAction(apt)" class="apt-quick-actions">
+        <button
+          class="qa-btn qa-success"
+          :disabled="changingId === apt.id && changingTo === 'completed'"
+          @click="quickChangeStatus(apt, 'completed')"
+        >✓ Hoàn thành</button>
+        <button
+          class="qa-btn qa-danger"
+          :disabled="changingId === apt.id && changingTo === 'no_show'"
+          @click="quickChangeStatus(apt, 'no_show')"
+        >⊘ Không đến</button>
+        <button
+          class="qa-btn qa-ghost"
+          :disabled="changingId === apt.id && changingTo === 'cancelled'"
+          @click="quickChangeStatus(apt, 'cancelled')"
+        >✕ Huỷ</button>
+      </div>
+
+      <!-- Audit line: ai đổi status + lúc nào -->
+      <div v-if="apt.statusChangedBy && apt.status !== 'scheduled' && apt.status !== 'overdue'" class="apt-audit">
+        ✓ {{ apt.statusChangedBy.fullName || apt.statusChangedBy.email }}<span v-if="apt.statusChangedAt"> · {{ formatRelativeTime(apt.statusChangedAt) }}</span>
       </div>
     </div>
 
@@ -164,10 +107,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed } from 'vue';
+import { ref, computed } from 'vue';
 import { api } from '@/api/index';
-import AppointmentQuickDialog from './AppointmentQuickDialog.vue';
+import AppointmentEditor from '@/components/appointments/AppointmentEditor.vue';
+import { useAuthStore } from '@/stores/auth';
+const _authStoreChatApt = useAuthStore();
+const currentUserId = computed<string | null>(() => _authStoreChatApt.user?.id ?? null);
 import { getOrgParts, weekdayInOrgTz, formatInOrgTz, startOfOrgDay } from '@/composables/use-org-timezone';
+import { typeIcon, typeLabel } from '@/composables/appointment-helpers';
 
 export interface Appointment {
   id: string;
@@ -176,12 +123,17 @@ export interface Appointment {
   type: string | null;
   status: string;
   notes: string | null;
+  title?: string | null;
+  durationMin?: number | null;
+  location?: string | null;
   source?: 'manual' | 'zalo';
   emoji?: string | null;
   externalRef?: string | null;
   zaloMessageId?: string | null;
   statusChangedAt?: string | null;
   statusChangedBy?: { id: string; fullName: string | null; email: string } | null;
+  assignedUser?: { id: string; fullName: string | null; email: string } | null;
+  contact?: { id: string; fullName: string | null; phone: string | null } | null;
 }
 
 const props = defineProps<{
@@ -194,16 +146,20 @@ const emit = defineEmits<{
   refresh: [];
 }>();
 
-const showQuickDialog = ref(false);
-const saving = ref(false);
-const editingId = ref<string | null>(null);
+const showEditor = ref(false);
+const editingApt = ref<Appointment | null>(null);
 const changingId = ref<string | null>(null);
 const changingTo = ref<string | null>(null);
 
-const editForm = reactive({ datetime: '', notes: '', status: '' });
+function openEditor(apt: Appointment | null) {
+  editingApt.value = apt;
+  showEditor.value = true;
+}
 
-function onCreated() {
-  // AppointmentQuickDialog emit('created') sau khi POST thành công
+function onSaved() {
+  // Editor emit('created' | 'updated') sau khi save xong → close + refresh list
+  showEditor.value = false;
+  editingApt.value = null;
   emit('refresh');
 }
 
@@ -214,14 +170,6 @@ const statusOptions = [
   { title: 'Huỷ', value: 'cancelled' },
   { title: 'Không đến', value: 'no_show' },
 ];
-
-// Helpers cho edit row (giữ inline edit datetime-local picker).
-function pad(n: number): string {
-  return n.toString().padStart(2, '0');
-}
-function toLocalInput(d: Date): string {
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
 
 // Compute "effective status" — bao gồm cả scheduled qua hạn nhưng cron chưa flip
 // (cron chạy mỗi 30 phút → có lag, UI cần real-time hơn).
@@ -263,18 +211,7 @@ function aptRowClass(apt: Appointment): string {
   const es = effectiveStatus(apt);
   if (es === 'overdue') return 'apt-overdue';
   if (es === 'completed' || es === 'cancelled' || es === 'no_show') return 'apt-done';
-  return ''; // scheduled = default warning border
-}
-
-function statusColor(s: string): string {
-  switch (s) {
-    case 'scheduled': return 'blue';
-    case 'overdue': return 'orange'; // cảnh báo sale cần action
-    case 'completed': return 'green';
-    case 'cancelled': return 'grey';
-    case 'no_show': return 'red';
-    default: return 'grey';
-  }
+  return 'apt-upcoming';
 }
 
 function statusLabel(s: string): string {
@@ -314,16 +251,6 @@ function formatAptDate(d: string): string {
   return formatInOrgTz(d, undefined, { dateOnly: true });
 }
 
-function startEdit(apt: Appointment) {
-  editingId.value = apt.id;
-  // Dùng appointmentDate (UTC ISO → browser local Date) thay vì appointmentTime string
-  // — vì rows cũ có thể lưu sai timezone.
-  const baseDate = apt.appointmentDate ? new Date(apt.appointmentDate) : new Date();
-  editForm.datetime = toLocalInput(baseDate);
-  editForm.notes = apt.notes ?? '';
-  editForm.status = apt.status;
-}
-
 // Quick action: chỉ active khi status đang ở scheduled/overdue (chưa có outcome cuối)
 function canQuickAction(apt: Appointment): boolean {
   return apt.status === 'scheduled' || apt.status === 'overdue';
@@ -356,99 +283,144 @@ function formatRelativeTime(iso: string): string {
   return formatInOrgTz(iso, undefined, { dateOnly: true });
 }
 
-async function submitEdit(appointmentId: string) {
-  saving.value = true;
-  try {
-    const dt = editForm.datetime ? new Date(editForm.datetime) : null;
-    await api.put(`/appointments/${appointmentId}`, {
-      appointmentDate: dt ? dt.toISOString() : undefined,
-      appointmentTime: dt ? `${pad(dt.getHours())}:${pad(dt.getMinutes())}` : null,
-      notes: editForm.notes || null,
-      status: editForm.status,
-    });
-    editingId.value = null;
-    emit('refresh');
-  } catch (err) {
-    console.error('Update appointment error:', err);
-  } finally {
-    saving.value = false;
-  }
-}
 </script>
 
 <style scoped>
-/* Inline create form đã được removed — dùng AppointmentQuickDialog modal cho UX nhất quán.
- * CSS cho .apt-form / .apt-form-label / .apt-form-preview gỡ theo. */
+/* ChatAppointments card — kế thừa design Airtable signature từ AppointmentsListView.
+   3-tier urgency: overdue (đỏ) / upcoming (xanh dương) / done (xám mờ). */
 
 .apt-row {
-  background: rgba(255, 183, 77, 0.05);
-  border: 1.5px solid rgba(255, 183, 77, 0.3);
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-left: 4px solid #2563eb; /* default upcoming blue */
   border-radius: 10px;
-  padding: 8px 10px;
-  margin-bottom: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
   transition: background 0.15s ease;
 }
-/* Overdue: border đỏ cảnh báo, nền cam nhạt */
+.apt-row.apt-upcoming {
+  background: #fff;
+  border-left-color: #2563eb;
+}
 .apt-row.apt-overdue {
-  background: rgba(255, 87, 34, 0.06);
-  border-color: #ef5350;
-  box-shadow: 0 0 0 1px rgba(239, 83, 80, 0.15);
+  background: #fef2f2;
+  border-color: #fecaca;
+  border-left-color: #dc2626;
 }
-/* Done (completed/cancelled/no_show): border xám, đẩy xuống dưới, mờ nhẹ */
 .apt-row.apt-done {
-  background: rgba(0, 0, 0, 0.02);
-  border-color: rgba(0, 0, 0, 0.12);
-  opacity: 0.7;
-}
-.apt-row.apt-done .apt-datetime {
-  text-decoration: line-through;
-  color: #9e9e9e;
+  background: #f8fafc;
+  border-left-color: #94a3b8;
+  opacity: 0.65;
 }
 
-.apt-datetime {
-  font-size: 13px;
-  font-weight: 600;
-  color: #424242;
+/* Row 1: tags + status + edit */
+.apt-top {
+  display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+  margin-bottom: 6px;
 }
-.apt-time {
-  color: var(--smax-primary, #2962ff);
-  font-weight: 500;
+.apt-tag {
+  font-size: 10.5px; font-weight: 500;
+  padding: 2px 7px; border-radius: 999px;
+  background: #f1f5f9; color: #475569;
+  border: 1px solid #e2e8f0;
 }
-.apt-notes {
-  font-size: 11px;
-  color: #757575;
+.apt-tag.tag-zalo { background: #e0f2fe; color: #075985; border-color: #bae6fd; }
+.apt-tag.tag-crm  { background: #ede9fe; color: #5b21b6; border-color: #ddd6fe; }
+.apt-type-pill {
+  font-size: 10.5px; font-weight: 500;
+  padding: 2px 8px; border-radius: 999px;
+  background: #f8fafc; color: #41454d;
+  border: 1px solid #e5e7eb;
+  white-space: nowrap;
+}
+.apt-status-pill {
+  margin-left: auto;
+  font-size: 10.5px; font-weight: 500;
+  padding: 2px 9px; border-radius: 999px;
+  white-space: nowrap;
+}
+.apt-status-pill.s-overdue   { background: #fee2e2; color: #991b1b; }
+.apt-status-pill.s-scheduled { background: #dbeafe; color: #1d4ed8; }
+.apt-status-pill.s-completed { background: #dcfce7; color: #14532d; }
+.apt-status-pill.s-cancelled { background: #f1f5f9; color: #64748b; text-decoration: line-through; }
+.apt-status-pill.s-no_show   { background: #fbe6dc; color: #7a2000; }
+.apt-edit-btn {
+  width: 22px; height: 22px;
+  border: 1px solid #e5e7eb; border-radius: 6px;
+  background: #fff; color: #6b7280; cursor: pointer;
+  font-size: 12px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.apt-edit-btn:hover { background: #f1f5f9; color: #1f2937; }
+
+/* Row 2: title */
+.apt-title {
+  font-size: 13.5px; font-weight: 500; color: #1a1d24;
+  margin-bottom: 3px; line-height: 1.3;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.apt-title.muted { color: #94a3b8; font-style: italic; }
+.apt-row.apt-overdue .apt-title { color: #991b1b; }
+.apt-row.apt-done .apt-title { text-decoration: line-through; color: #64748b; }
+
+/* Row 3: time + duration */
+.apt-time-line {
+  font-size: 12px; font-weight: 500;
+  display: flex; align-items: baseline; gap: 4px;
+  font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+  margin-bottom: 3px;
+}
+.apt-datetime { color: #1d4ed8; font-weight: 600; }
+.apt-row.apt-overdue .apt-datetime { color: #dc2626; }
+.apt-row.apt-done .apt-datetime { color: #64748b; text-decoration: line-through; }
+.apt-dur { color: #6b7280; font-weight: 500; font-family: 'Inter', sans-serif; font-size: 11px; }
+
+/* Row 4: meta + notes */
+.apt-meta {
+  font-size: 11px; color: #6b7280;
+  display: flex; gap: 10px; flex-wrap: wrap;
   margin-top: 2px;
-  line-height: 1.4;
+}
+.apt-meta .apt-loc { color: #4b5563; }
+.apt-meta .apt-sale { color: #4b5563; }
+.apt-notes {
+  font-size: 11.5px; color: #475569;
+  margin-top: 4px; line-height: 1.4;
+  padding: 4px 6px;
+  background: rgba(0, 0, 0, 0.025);
+  border-radius: 6px;
 }
 
+/* Row 5: quick action buttons */
 .apt-quick-actions {
-  display: flex;
-  gap: 4px;
+  display: flex; gap: 5px;
   margin-top: 8px;
   padding-top: 6px;
   border-top: 1px dashed rgba(0, 0, 0, 0.08);
 }
-.apt-quick-actions :deep(.v-btn) {
-  font-size: 10px !important;
-  letter-spacing: 0;
+.qa-btn {
+  font-size: 11px; font-weight: 500;
+  padding: 4px 9px; border-radius: 7px;
+  background: #fff; border: 1px solid #e5e7eb; cursor: pointer;
+  white-space: nowrap;
+  font-family: inherit;
 }
+.qa-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.qa-btn.qa-success { background: #dcfce7; color: #14532d; border-color: #86efac; }
+.qa-btn.qa-success:hover:not(:disabled) { background: #bbf7d0; }
+.qa-btn.qa-danger { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
+.qa-btn.qa-danger:hover:not(:disabled) { background: #fecaca; }
+.qa-btn.qa-ghost { color: #6b7280; }
+.qa-btn.qa-ghost:hover:not(:disabled) { background: #f1f5f9; }
 
 .apt-audit {
-  display: flex;
-  align-items: center;
-  gap: 4px;
   margin-top: 6px;
-  font-size: 10px;
-  color: #757575;
+  font-size: 10.5px; color: #6b7280;
   font-style: italic;
-}
-.apt-audit .v-icon {
-  font-size: 11px;
 }
 
 .apt-empty {
-  font-size: 11px;
-  color: #9e9e9e;
+  font-size: 11.5px; color: #94a3b8;
   text-align: center;
   padding: 14px 0;
   font-style: italic;

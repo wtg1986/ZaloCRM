@@ -17,6 +17,7 @@ import { backfillIfEmpty } from './zalo-history-backfill.js';
 import { readFile } from 'fs/promises';
 import { imageSize } from 'image-size';
 import { withProxy } from './proxy-util.js';
+import { writeTransition, type ZaloStatus, type StatusReason } from './status-log-service.js';
 
 // zca-js has no reliable ESM type exports — load via CJS interop
 const require = createRequire(import.meta.url);
@@ -43,6 +44,28 @@ interface ZaloInstance {
   displayName?: string;
   zaloUid?: string;
   lastActivity: Date;
+}
+
+// Map zaloPool status → ZaloStatus enum cho status log.
+// 'connecting' không được log (intermediate, không count vào uptime).
+function mapToLogStatus(status: string): ZaloStatus | null {
+  if (status === 'connected') return 'connected';
+  if (status === 'disconnected') return 'disconnected';
+  if (status === 'qr_pending') return 'qr_pending';
+  if (status === 'auth_failed') return 'auth_failed';
+  if (status === 'expired') return 'expired';
+  return null; // 'connecting' và các status khác → skip
+}
+
+// Default reason cho mỗi status nếu caller không truyền context cụ thể.
+function defaultReason(status: ZaloStatus): StatusReason {
+  switch (status) {
+    case 'connected': return 'login';
+    case 'disconnected': return 'disconnect';
+    case 'qr_pending': return 'session_expired';
+    case 'auth_failed': return 'auth_fail';
+    case 'expired': return 'session_expired';
+  }
 }
 
 class ZaloAccountPool {
@@ -118,7 +141,7 @@ class ZaloAccountPool {
 
       this.attachListener(accountId, api);
       this.io?.emit('zalo:connected', { accountId, zaloUid: ownId });
-      await this.updateAccountDB(accountId, 'connected', ownId);
+      await this.updateAccountDB(accountId, 'connected', ownId, 'qr_scan');
       // Emit webhook (orgId lookup is async, fire-and-forget)
       prisma.zaloAccount.findUnique({ where: { id: accountId }, select: { orgId: true } })
         .then((rec) => rec && emitWebhook(rec.orgId, 'zalo.connected', { accountId }))
@@ -179,7 +202,7 @@ class ZaloAccountPool {
       } catch {}
 
       this.attachListener(accountId, api);
-      await this.updateAccountDB(accountId, 'connected', ownId);
+      await this.updateAccountDB(accountId, 'connected', ownId, 'reconnect_ok');
       this.io?.emit('zalo:connected', { accountId, zaloUid: ownId });
       prisma.zaloAccount.findUnique({ where: { id: accountId }, select: { orgId: true } })
         .then((rec) => rec && emitWebhook(rec.orgId, 'zalo.connected', { accountId }))
@@ -196,7 +219,7 @@ class ZaloAccountPool {
     } catch (err) {
       const instance = this.instances.get(accountId);
       if (instance) instance.status = 'disconnected';
-      await this.updateAccountDB(accountId, 'qr_pending', null);
+      await this.updateAccountDB(accountId, 'qr_pending', null, 'reconnect_failed');
       this.io?.emit('zalo:reconnect-failed', { accountId, error: String(err) });
     }
   }
@@ -234,7 +257,7 @@ class ZaloAccountPool {
       onDisconnected: (id) => {
         const inst = this.instances.get(id);
         if (inst) inst.status = 'disconnected';
-        this.updateAccountDB(id, 'disconnected', null);
+        this.updateAccountDB(id, 'disconnected', null, 'disconnect');
         stopMessageSync(id);
         // Emit webhook for disconnect (fire-and-forget)
         prisma.zaloAccount.findUnique({ where: { id }, select: { orgId: true } })
@@ -251,7 +274,7 @@ class ZaloAccountPool {
         if (history.length >= 5) {
           // >5 disconnects in 5 min → stop reconnecting, require QR re-login
           logger.error(`[zalo:${id}] Circuit breaker: ${history.length} disconnects in 5 min — stopping auto-reconnect. QR re-login required.`);
-          this.updateAccountDB(id, 'qr_pending', null);
+          this.updateAccountDB(id, 'qr_pending', null, 'session_expired');
           this.io?.emit('zalo:reconnect-failed', { accountId: id, error: 'Session không ổn định, cần đăng nhập QR lại' });
           this.disconnectHistory.delete(key);
           return; // DON'T reconnect
@@ -274,16 +297,38 @@ class ZaloAccountPool {
   }
 
   // Sync account status and zaloUid to DB
-  private async updateAccountDB(accountId: string, status: string, zaloUid: string | null): Promise<void> {
+  // Anh chốt 2026-05-22: kèm ghi ZaloAccountStatusLog transition cho uptime tracking.
+  // Optional `reason` để phân biệt context (login / reconnect_ok / disconnect / auth_fail).
+  // Mặc định map theo status nếu không truyền.
+  private async updateAccountDB(
+    accountId: string,
+    status: string,
+    zaloUid: string | null,
+    reason?: StatusReason,
+  ): Promise<void> {
     try {
-      await prisma.zaloAccount.update({
+      const updated = await prisma.zaloAccount.update({
         where: { id: accountId },
         data: {
           status,
           ...(zaloUid !== null ? { zaloUid } : {}),
           ...(status === 'connected' ? { lastConnectedAt: new Date() } : {}),
         },
+        select: { orgId: true },
       });
+
+      // Status log: chỉ ghi khi status thuộc enum ZaloStatus. Skip 'connecting' (intermediate).
+      const logStatus = mapToLogStatus(status);
+      if (logStatus) {
+        const logReason: StatusReason = reason ?? defaultReason(logStatus);
+        // Fire-and-forget — không block updateAccountDB nếu status log lỗi.
+        void writeTransition({
+          accountId,
+          orgId: updated.orgId,
+          status: logStatus,
+          reason: logReason,
+        });
+      }
     } catch (err) {
       logger.error(`[zalo:${accountId}] updateAccountDB error:`, err);
     }

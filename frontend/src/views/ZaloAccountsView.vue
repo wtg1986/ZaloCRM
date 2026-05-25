@@ -24,10 +24,33 @@
       </div>
     </div>
 
+    <!-- Phase Privacy v2 2026-05-23 — Tab strip: Quản lý nick / Riêng tư -->
+    <div class="za-tabs">
+      <button
+        class="za-tab"
+        :class="{ active: activeTab === 'manage' }"
+        @click="setTab('manage')"
+      >
+        Quản lý nick
+      </button>
+      <button
+        class="za-tab"
+        :class="{ active: activeTab === 'privacy' }"
+        @click="setTab('privacy')"
+      >
+        🔒 Riêng tư
+        <span v-if="privacyCounter" class="za-tab-counter" :class="{ full: privacyCounter.atMax }">
+          ({{ privacyCounter.used }}/{{ privacyCounter.max }})
+        </span>
+      </button>
+    </div>
+
+    <!-- Tab content: manage (default) -->
+    <template v-if="activeTab === 'manage'">
     <!-- STATS CARDS -->
     <StatsCards :stats="stats" />
 
-    <!-- FILTER ROW -->
+    <!-- FILTER ROW — Phase 4 redesign 2026-05-22 -->
     <div class="filter-row">
       <div class="search">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -39,11 +62,41 @@
         <option value="idle">Idle</option>
         <option value="error">Error / Disconnected</option>
       </select>
+      <!-- Phòng ban filter (multi-select) — Phase 4 2026-05-22 -->
+      <div class="chip-multi" :class="{ open: showDeptPicker }">
+        <button class="chip-btn" type="button" @click.stop="showDeptPicker = !showDeptPicker">
+          <span>Phòng ban</span>
+          <span v-if="deptFilter.length" class="chip-count">{{ deptFilter.length }}</span>
+          <span class="chip-caret">▾</span>
+        </button>
+        <div v-if="showDeptPicker" class="chip-pop" @click.stop>
+          <div class="chip-pop-head">
+            <span>Lọc theo phòng ban (cascade)</span>
+            <button v-if="deptFilter.length" class="chip-clear" @click="deptFilter = []">Bỏ tất cả</button>
+          </div>
+          <div class="chip-pop-list">
+            <label
+              v-for="d in deptFlatOptions"
+              :key="d.id"
+              class="chip-pop-row"
+              :style="{ paddingLeft: 10 + d.depth * 14 + 'px' }"
+            >
+              <input type="checkbox" :value="d.id" v-model="deptFilter" />
+              <span>{{ d.name }}</span>
+            </label>
+            <div v-if="!deptFlatOptions.length" class="chip-pop-empty">Chưa có phòng ban</div>
+          </div>
+        </div>
+      </div>
       <select v-model="saleFilter" class="select">
-        <option value="">Sale: Tất cả</option>
-        <option v-for="u in salesOptions" :key="u.id" :value="u.id">{{ u.fullName || u.email }}</option>
+        <option value="">Owner: Tất cả</option>
+        <option v-for="u in ownerOptions" :key="u.id" :value="u.id">{{ u.fullName || u.email }}</option>
       </select>
-      <select v-model="sortMode" class="select">
+      <label class="toggle-group">
+        <input type="checkbox" v-model="groupByDept" />
+        <span>Group theo phòng ban</span>
+      </label>
+      <select v-model="sortMode" class="select select-sort">
         <option value="recent">Sort: Hoạt động mới</option>
         <option value="msg-desc">Sort: Msg today (nhiều→ít)</option>
         <option value="uptime-asc">Sort: Uptime thấp trước</option>
@@ -53,8 +106,9 @@
 
     <!-- TABLE -->
     <AccountsTable
-      :accounts="filtered"
+      :accounts="visibleAccounts"
       :uptime-cache="uptimeCache"
+      :group-by-dept="groupByDept"
       :is-selected="isSelected"
       :toggle-select="toggleSelect"
       :select-all="selectAll"
@@ -64,7 +118,22 @@
       :uptime-color="uptimeColor"
       @open-detail="openDrawer"
       @action="onTableAction"
+      @reassign-owner="onOpenReassign"
     />
+
+    <!-- Phase 4 2026-05-22: Owner reassign drawer -->
+    <OwnerReassignDrawer
+      v-model="reassignOpen"
+      :account="reassignAccount"
+      @reassigned="onReassigned"
+    />
+
+    </template>
+
+    <!-- Tab content: privacy (Phase Privacy v2 2026-05-23) -->
+    <template v-else-if="activeTab === 'privacy'">
+      <PrivacyNicksTab />
+    </template>
 
     <!-- DETAIL DRAWER -->
     <AccountDetailDrawer
@@ -77,6 +146,7 @@
       @add-crew="onAddCrew"
       @remove-crew="onRemoveCrew"
       @action="onDrawerAction"
+      @reassign-owner="onOpenReassign"
     />
 
     <!-- BULK ACTION BAR -->
@@ -172,14 +242,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, computed, onUnmounted } from 'vue';
 import { useZaloAccountsDashboard } from '@/composables/use-zalo-accounts-dashboard';
 import StatsCards from '@/components/zalo-accounts/StatsCards.vue';
 import AccountsTable from '@/components/zalo-accounts/AccountsTable.vue';
 import AccountDetailDrawer from '@/components/zalo-accounts/AccountDetailDrawer.vue';
 import BulkActionBar from '@/components/zalo-accounts/BulkActionBar.vue';
+import OwnerReassignDrawer from '@/components/zalo-accounts/OwnerReassignDrawer.vue';
+import PrivacyNicksTab from '@/components/zalo-accounts/PrivacyNicksTab.vue';
 import ZaloAccessDialog from '@/components/settings/ZaloAccessDialog.vue';
 import { api } from '@/api/index';
+import { useRoute, useRouter } from 'vue-router';
+import type { EnrichedAccount } from '@/composables/use-zalo-accounts-dashboard';
 
 const dash = useZaloAccountsDashboard();
 const {
@@ -221,18 +295,128 @@ const deleteTarget = computed(() => filtered.value.find((a) => a.id === deleteTa
 
 const lastRefreshLabel = computed(() => relativeTime(lastRefresh.value.toISOString()));
 
-// Sales filter options derived from current crew
-const salesOptions = computed(() => {
+// Phase Privacy v2 2026-05-23 — Tab strip state + URL sync
+const route = useRoute();
+const router = useRouter();
+type TabKey = 'manage' | 'privacy';
+const activeTab = ref<TabKey>((route.query.tab as TabKey) === 'privacy' ? 'privacy' : 'manage');
+function setTab(t: TabKey) {
+  activeTab.value = t;
+  router.replace({ query: { ...route.query, tab: t === 'manage' ? undefined : t } });
+  if (t === 'privacy') loadPrivacyCounter();
+}
+
+// Counter (N/max) hiển thị trên tab "Riêng tư"
+const privacyCounter = ref<{ used: number; max: number; atMax: boolean } | null>(null);
+async function loadPrivacyCounter() {
+  try {
+    const { data } = await api.get<{ maxPrivacyNicks: number }>('/me/internal-contact');
+    const myNicksRes = await api.get<{ nicks: Array<{ privacyMode: string }> }>('/privacy/my-nicks');
+    // BE wraps response trong { nicks: [...] }
+    const list = Array.isArray(myNicksRes.data) ? myNicksRes.data : (myNicksRes.data?.nicks ?? []);
+    const used = list.filter((n) => n.privacyMode === 'main').length;
+    privacyCounter.value = { used, max: data.maxPrivacyNicks, atMax: used >= data.maxPrivacyNicks };
+  } catch { /* silent — counter optional */ }
+}
+
+// Phase 4 2026-05-22: Owner filter dropdown (KHÔNG còn "Sales" — đã đổi thành Owner per design).
+// Derive từ accounts hiện tại, chỉ owner chính chủ (ownerUserId).
+const ownerOptions = computed(() => {
   const map = new Map<string, { id: string; fullName: string | null; email: string }>();
   for (const a of filtered.value) {
-    for (const c of a.crew) {
-      if (!map.has(c.user.id)) map.set(c.user.id, c.user);
-    }
+    if (a.owner && !map.has(a.owner.id)) map.set(a.owner.id, a.owner);
   }
   return Array.from(map.values()).sort((a, b) =>
     (a.fullName ?? a.email).localeCompare(b.fullName ?? b.email),
   );
 });
+
+// Phase 4 2026-05-22: Department tree (cascade filter chip).
+// Fetch tree từ /departments → flatten to depth-indexed list cho dropdown.
+interface DeptNode {
+  id: string;
+  name: string;
+  path: string;
+  depth: number;
+  parentId: string | null;
+  children?: DeptNode[];
+}
+const deptTree = ref<DeptNode[]>([]);
+const deptFilter = ref<string[]>([]); // selected dept IDs (cascade — subtree path match)
+const showDeptPicker = ref(false);
+const groupByDept = ref(false);
+
+async function fetchDeptTree() {
+  try {
+    const { data } = await api.get<{ tree: DeptNode[] }>('/departments');
+    deptTree.value = data.tree;
+  } catch {
+    // Org chưa setup dept — không block UI
+    deptTree.value = [];
+  }
+}
+
+const deptFlatOptions = computed(() => {
+  const out: { id: string; name: string; depth: number; path: string }[] = [];
+  function walk(nodes: DeptNode[], depth: number) {
+    for (const n of nodes) {
+      out.push({ id: n.id, name: n.name, depth, path: n.path });
+      if (n.children?.length) walk(n.children, depth + 1);
+    }
+  }
+  walk(deptTree.value, 0);
+  return out;
+});
+
+// Build a Set of dept IDs whose `path` is under any selected dept path (cascade match).
+const deptFilterSet = computed(() => {
+  if (deptFilter.value.length === 0) return null; // null = no filter
+  const selectedPaths = deptFlatOptions.value
+    .filter((d) => deptFilter.value.includes(d.id))
+    .map((d) => d.path);
+  const matchedIds = new Set<string>();
+  for (const d of deptFlatOptions.value) {
+    for (const p of selectedPaths) {
+      if (d.path.startsWith(p)) {
+        matchedIds.add(d.id);
+        break;
+      }
+    }
+  }
+  return matchedIds;
+});
+
+// Apply dept filter on top of `filtered` (which already covers search/status/sale).
+const visibleAccounts = computed(() => {
+  let list = filtered.value;
+  const deptSet = deptFilterSet.value;
+  if (deptSet) {
+    list = list.filter((a) => a.ownerDepartment && deptSet.has(a.ownerDepartment.id));
+  }
+  return list;
+});
+
+// Owner reassign drawer
+const reassignOpen = ref(false);
+const reassignAccount = ref<EnrichedAccount | null>(null);
+
+function onOpenReassign(account: EnrichedAccount) {
+  reassignAccount.value = account;
+  reassignOpen.value = true;
+}
+async function onReassigned(_accountId: string, _newOwnerUserId: string) {
+  await refreshAll();
+}
+
+// Click outside dept picker → close
+function onDocClick(e: MouseEvent) {
+  if (!showDeptPicker.value) return;
+  const t = e.target as HTMLElement;
+  if (t.closest('.chip-multi')) return;
+  showDeptPicker.value = false;
+}
+onMounted(() => document.addEventListener('click', onDocClick));
+onUnmounted(() => document.removeEventListener('click', onDocClick));
 
 // ─────────────────────────────────────────────────────────────────
 // Handlers
@@ -377,7 +561,7 @@ async function handleDelete() {
 // ─────────────────────────────────────────────────────────────────
 onMounted(async () => {
   setupSocket();
-  await refreshAll();
+  await Promise.all([refreshAll(), fetchDeptTree(), loadPrivacyCounter()]);
   lastRefresh.value = new Date();
 
   // Light polling — refresh stats every 60s while page is open.
@@ -391,6 +575,81 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+/* Phase Privacy v2 2026-05-23 — Tab strip */
+.za-tabs {
+  display: flex; gap: 6px;
+  border-bottom: 1px solid #E5E7EB;
+  margin-bottom: 18px; padding-bottom: 0;
+}
+.za-tab {
+  background: transparent; border: none; cursor: pointer;
+  padding: 10px 18px; font-family: inherit; font-size: 13.5px; font-weight: 600;
+  color: #6B7280; position: relative;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: color 0.15s;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.za-tab:hover { color: #374151; }
+.za-tab.active { color: #5E6AD2; border-bottom-color: #5E6AD2; }
+.za-tab-counter {
+  font-size: 11px; font-weight: 700;
+  padding: 2px 8px; border-radius: 9999px;
+  background: #EFF6FF; color: #1D4ED8;
+  font-variant-numeric: tabular-nums;
+}
+.za-tab-counter.full { background: #FEF2F2; color: #B91C1C; }
+
+/* Phase 4 redesign 2026-05-22: filter chip Phòng ban + group-by toggle */
+.chip-multi { position: relative; }
+.chip-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 12px; background: white; border: 1px solid #E4E5E9;
+  border-radius: 6px; font-size: 13px; cursor: pointer;
+  font-family: inherit; color: #374151;
+}
+.chip-btn:hover { background: #F9FAFB; border-color: #C7CCEB; }
+.chip-multi.open .chip-btn { border-color: #5E6AD2; background: #EEF0FF; color: #4F5BC4; }
+.chip-count {
+  background: #5E6AD2; color: white;
+  font-size: 10px; font-weight: 700;
+  padding: 1px 6px; border-radius: 10px;
+  line-height: 1.4;
+}
+.chip-caret { font-size: 10px; color: #9CA3AF; }
+.chip-pop {
+  position: absolute; top: 100%; left: 0; margin-top: 4px;
+  background: white; border: 1px solid #E4E5E9; border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(15, 23, 42, 0.12);
+  min-width: 260px; max-width: 360px;
+  z-index: 50;
+}
+.chip-pop-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 12px; border-bottom: 1px solid #F3F4F6;
+  font-size: 11px; color: #6B7280; text-transform: uppercase; letter-spacing: .04em; font-weight: 600;
+}
+.chip-clear {
+  background: transparent; border: none; color: #5E6AD2;
+  font-size: 11px; cursor: pointer; font-family: inherit; font-weight: 600;
+}
+.chip-pop-list { max-height: 320px; overflow-y: auto; padding: 4px 0; }
+.chip-pop-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; font-size: 13px; color: #374151;
+  cursor: pointer;
+}
+.chip-pop-row:hover { background: #F9FAFB; }
+.chip-pop-empty { padding: 16px; text-align: center; color: #9CA3AF; font-size: 12px; }
+
+.toggle-group {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 10px; background: white; border: 1px solid #E4E5E9;
+  border-radius: 6px; font-size: 12.5px; color: #374151;
+  cursor: pointer; user-select: none;
+}
+.toggle-group input { cursor: pointer; accent-color: #5E6AD2; }
+.toggle-group:has(input:checked) { background: #EEF0FF; border-color: #5E6AD2; color: #4F5BC4; }
+
 .za-page {
   padding: 20px 24px 120px;
   max-width: 1480px;

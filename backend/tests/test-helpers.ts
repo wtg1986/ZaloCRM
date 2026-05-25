@@ -52,6 +52,7 @@ export function mockPrisma() {
   return {
     conversation: {
       findFirst: vi.fn(),
+      findUnique: vi.fn(),
       findMany: vi.fn(),
       count: vi.fn(),
       update: vi.fn(),
@@ -59,6 +60,7 @@ export function mockPrisma() {
     },
     message: {
       findFirst: vi.fn(),
+      findUnique: vi.fn(),
       findMany: vi.fn(),
       count: vi.fn(),
       create: vi.fn(),
@@ -66,12 +68,15 @@ export function mockPrisma() {
     },
     messageReaction: {
       upsert: vi.fn(),
+      count: vi.fn(),
+      deleteMany: vi.fn(),
     },
     pinnedConversation: {
       upsert: vi.fn(),
       deleteMany: vi.fn(),
     },
     zaloAccount: {
+      findUnique: vi.fn(),
       findFirst: vi.fn(),
       findMany: vi.fn(),
     },
@@ -102,6 +107,8 @@ export function mockZaloOps() {
     undoMessage: vi.fn().mockResolvedValue(undefined),
     editMessage: vi.fn().mockResolvedValue(undefined),
     forwardMessage: vi.fn().mockResolvedValue(undefined),
+    sendFile: vi.fn().mockResolvedValue({ message: { msgId: 'media-zalo-msg-1' } }),
+    sendVoice: vi.fn().mockResolvedValue({ message: { msgId: 'voice-zalo-msg-1' } }),
     pinConversation: vi.fn().mockResolvedValue({ success: true }),
     getPinConversations: vi.fn().mockResolvedValue([]),
     sendSticker: vi.fn().mockResolvedValue({ success: true }),

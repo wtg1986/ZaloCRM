@@ -81,9 +81,22 @@ if [[ $SKIP_FRONTEND -eq 0 ]]; then
   ( cd "$ROOT/frontend" && npm run build 2>&1 | tail -3 )
   ok "dist/ updated"
 
-  step "Frontend: copy dist/ → container /app/static/"
-  docker cp "$ROOT/frontend/dist/." "$CONTAINER:/app/static/" >/dev/null
-  ok "copied"
+  step "Frontend: clean stale + copy dist/ → container /app/static/"
+  # docker cp quirks trên Windows/Git Bash:
+  #   - `cp parent/. → /static/` không reliable (Git Bash path conv mangles `.`
+  #     suffix, có khi tạo subdir dist/ thay vì copy content)
+  #   - Không overwrite existing files với mtime preserved → index.html cũ giữ
+  # Fix: wipe /app/static/* rồi copy từng artifact explicit (assets dir +
+  # index.html + brand dir + public files), tránh `cp folder/.` syntax.
+  docker exec "$CONTAINER" sh -c 'find /app/static -mindepth 1 -delete' >/dev/null 2>&1 || true
+  docker cp "$ROOT/frontend/dist/assets"     "$CONTAINER:/app/static/" >/dev/null
+  docker cp "$ROOT/frontend/dist/index.html" "$CONTAINER:/app/static/index.html" >/dev/null
+  # Public assets (brand/, favicon, html mockups, xlsx). Copy folder + loose files.
+  [ -d "$ROOT/frontend/dist/brand" ] && docker cp "$ROOT/frontend/dist/brand" "$CONTAINER:/app/static/" >/dev/null 2>&1 || true
+  for f in "$ROOT"/frontend/dist/*.html "$ROOT"/frontend/dist/*.png "$ROOT"/frontend/dist/*.ico "$ROOT"/frontend/dist/*.svg "$ROOT"/frontend/dist/*.xlsx; do
+    [ -f "$f" ] && [ "$(basename "$f")" != "index.html" ] && docker cp "$f" "$CONTAINER:/app/static/" >/dev/null 2>&1 || true
+  done
+  ok "copied (clean replace)"
 fi
 
 # ─── 3. Restart ───

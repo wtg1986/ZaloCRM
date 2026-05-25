@@ -267,7 +267,11 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
   // ── GET /api/v1/contacts/:id — detail + friends (per nick) + appointments ──
   // Model B: KH Con = Friend row. Cha aggregate displayStatus/displayLeadScore/
   // displayHasZalo từ friends (xem contact-aggregate-display.ts).
-  app.get('/api/v1/contacts/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.get('/api/v1/contacts/:id', {
+    // Privacy phase integration: Contact PII (name, phone, avatar) sẽ redact nếu requester
+    // không own bất kỳ main-nick conv nào với contact này. Score/engagement metadata vẫn lộ.
+    config: { contentClass: 'mixed' as const, rbacResource: 'contact' as const, rbacAction: 'access' as const },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const user = request.user!;
       const { id } = request.params as { id: string };
@@ -285,7 +289,13 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
       if (!contact) return reply.status(404).send({ error: 'Contact not found' });
 
       const display = computeAggregateDisplay(contact);
-      return { ...contact, ...display };
+
+      // Phase Riêng Tư 2026-05-22: blur PII nếu contact có friend row thuộc main-nick non-owned (Q4 lock)
+      const { buildPrivacyContext, shouldRedactContactPii, redactContact } = await import('../privacy/redact.js');
+      const privacyCtx = await buildPrivacyContext(request);
+      const shouldRedact = await shouldRedactContactPii(contact.id, privacyCtx);
+      const merged = { ...contact, ...display };
+      return shouldRedact ? redactContact(merged as any) : merged;
     } catch (err) {
       logger.error('[contacts] Detail error:', err);
       return reply.status(500).send({ error: 'Failed to fetch contact' });
@@ -551,7 +561,14 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ── DELETE /api/v1/contacts/:id ───────────────────────────────────────────
-  app.delete('/api/v1/contacts/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+  // RBAC Phase Phân Quyền 2026-05-21: require contact.delete grant
+  app.delete('/api/v1/contacts/:id', {
+    preHandler: async (request, reply) => {
+      const { requireGrant } = await import('../rbac/rbac-middleware.js');
+      return requireGrant('contact', 'delete')(request, reply);
+    },
+    config: { contentClass: 'mixed', rbacResource: 'contact', rbacAction: 'delete' },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const user = request.user!;
       const { id } = request.params as { id: string };

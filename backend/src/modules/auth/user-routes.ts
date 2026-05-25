@@ -157,4 +157,120 @@ export async function userRoutes(app: FastifyInstance) {
 
     return { success: true };
   });
+
+  // Phase Privacy v2 2026-05-23 — admin sửa maxPrivacyNicks per user.
+  // PATCH /api/v1/users/:id/max-privacy-nicks { maxPrivacyNicks: 1-10 }
+  // Permission: org admin/owner only.
+  app.patch('/api/v1/users/:id/max-privacy-nicks', async (request: FastifyRequest, reply: FastifyReply) => {
+    const currentUser = request.user!;
+    if (currentUser.role !== 'owner' && currentUser.role !== 'admin') {
+      return reply.status(403).send({ error: 'Chỉ admin/owner sửa được maxPrivacyNicks' });
+    }
+    const { id } = request.params as { id: string };
+    const body = (request.body ?? {}) as { maxPrivacyNicks?: number };
+    const max = body.maxPrivacyNicks;
+    if (typeof max !== 'number' || !Number.isInteger(max) || max < 1 || max > 10) {
+      return reply.status(400).send({ error: 'maxPrivacyNicks phải là số nguyên 1-10' });
+    }
+
+    const target = await prisma.user.findFirst({
+      where: { id, orgId: currentUser.orgId },
+      select: { id: true },
+    });
+    if (!target) return reply.status(404).send({ error: 'User không tồn tại trong org' });
+
+    await prisma.user.update({
+      where: { id },
+      data: { maxPrivacyNicks: max },
+    });
+
+    return { ok: true, userId: id, maxPrivacyNicks: max };
+  });
+
+  // Phase Privacy v2 2026-05-23 — user pick nick "liên lạc nội bộ" của mình.
+  // PATCH /api/v1/me/internal-contact { zaloAccountId: string | null }
+  // Constraint: nick phải user OWN (ownerUserId === current user).
+  app.patch('/api/v1/me/internal-contact', async (request: FastifyRequest, reply: FastifyReply) => {
+    const currentUser = request.user!;
+    const body = (request.body ?? {}) as { zaloAccountId?: string | null };
+    const accountId = body.zaloAccountId ?? null;
+
+    if (accountId !== null) {
+      // Verify nick exists in org AND user owns it
+      const nick = await prisma.zaloAccount.findFirst({
+        where: { id: accountId, orgId: currentUser.orgId },
+        select: { id: true, ownerUserId: true },
+      });
+      if (!nick) return reply.status(404).send({ error: 'Nick không tồn tại trong org' });
+      if (nick.ownerUserId !== currentUser.id) {
+        return reply.status(403).send({ error: 'Chỉ chọn được nick mình OWN làm liên lạc nội bộ' });
+      }
+    }
+
+    await prisma.user.update({
+      where: { id: currentUser.id },
+      data: { internalContactZaloAccountId: accountId },
+    });
+
+    return { ok: true, internalContactZaloAccountId: accountId };
+  });
+
+  // Phase Privacy v2 2026-05-23 — GET /me/internal-contact (load current value).
+  // Auto-default: nếu user chưa có internalContactZaloAccountId + có ≥1 nick own
+  //   → pick nick có nhiều friend nhất, persist, return.
+  // Sale có thể override thủ công sau qua PATCH /me/internal-contact.
+  app.get('/api/v1/me/internal-contact', async (request: FastifyRequest) => {
+    const currentUser = request.user!;
+    let me = await prisma.user.findUnique({
+      where: { id: currentUser.id },
+      select: {
+        internalContactZaloAccountId: true,
+        maxPrivacyNicks: true,
+        internalContactNick: {
+          select: { id: true, displayName: true, avatarUrl: true, zaloUid: true, status: true },
+        },
+      },
+    });
+
+    if (!me) {
+      return { internalContactZaloAccountId: null, internalContactNick: null, maxPrivacyNicks: 2, autoDefaulted: false };
+    }
+
+    let autoDefaulted = false;
+    if (!me.internalContactZaloAccountId) {
+      // Auto-pick: nick own có nhiều friend nhất.
+      const candidates = await prisma.zaloAccount.findMany({
+        where: { ownerUserId: currentUser.id, orgId: currentUser.orgId },
+        select: { id: true, _count: { select: { friends: true } } },
+      });
+      if (candidates.length > 0) {
+        const best = candidates.reduce((acc, c) =>
+          (c._count?.friends ?? 0) > (acc._count?.friends ?? 0) ? c : acc,
+        );
+        await prisma.user.update({
+          where: { id: currentUser.id },
+          data: { internalContactZaloAccountId: best.id },
+        });
+        // Reload
+        me = await prisma.user.findUnique({
+          where: { id: currentUser.id },
+          select: {
+            internalContactZaloAccountId: true,
+            maxPrivacyNicks: true,
+            internalContactNick: {
+              select: { id: true, displayName: true, avatarUrl: true, zaloUid: true, status: true },
+            },
+          },
+        });
+        autoDefaulted = true;
+      }
+    }
+
+    return {
+      internalContactZaloAccountId: me?.internalContactZaloAccountId ?? null,
+      internalContactNick: me?.internalContactNick ?? null,
+      maxPrivacyNicks: me?.maxPrivacyNicks ?? 2,
+      autoDefaulted,
+    };
+  });
 }

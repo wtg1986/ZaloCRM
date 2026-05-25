@@ -5,7 +5,7 @@
  */
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { writeFile, unlink, mkdir } from 'node:fs/promises';
+import { writeFile, unlink, mkdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Server } from 'socket.io';
@@ -15,7 +15,7 @@ import { requireZaloAccess } from '../zalo/zalo-access-middleware.js';
 import { zaloPool } from '../zalo/zalo-pool.js';
 import { zaloRateLimiter } from '../zalo/zalo-rate-limiter.js';
 import { zaloOps } from '../../shared/zalo-operations.js';
-import { sendNativeVideo } from '../../shared/video-processor.js';
+import { generateThumbnail, sendNativeVideo } from '../../shared/video-processor.js';
 import { uploadBuffer, type UploadResult } from '../../shared/storage/minio-client.js';
 import { logger } from '../../shared/utils/logger.js';
 
@@ -75,6 +75,17 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
 
       const instance = zaloPool.getInstance(conversation.zaloAccountId);
       if (!instance?.api) return reply.status(400).send({ error: 'Zalo account not connected' });
+
+      // PRIVACY GUARD 2026-05-22: nick privacy=main → chỉ chính chủ upload được
+      if (conversation.zaloAccount.privacyMode === 'main') {
+        const senderUserId = (user as any).userId ?? user.id;
+        if (conversation.zaloAccount.ownerUserId !== senderUserId) {
+          return reply.status(403).send({
+            error: 'Nick này đang bật Riêng tư — chỉ chính chủ mới gửi được file/ảnh.',
+            code: 'PRIVACY_LOCKED',
+          });
+        }
+      }
 
       const limits = await zaloRateLimiter.checkLimits(conversation.zaloAccountId);
       if (!limits.allowed) return reply.status(429).send({ error: limits.reason });
@@ -151,6 +162,7 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
                 id: randomUUID(),
                 conversationId: id,
                 zaloMsgId: zaloMsgId || null,
+                zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
                 senderType: 'self',
                 senderUid: conversation.zaloAccount.zaloUid || '',
                 senderName: 'Staff',
@@ -167,25 +179,44 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
         // Send videos one-by-one using native sendVideo
         for (const i of videoIndexes) {
           zaloRateLimiter.recordSend(conversation.zaloAccountId);
+          let generatedThumbnail: Awaited<ReturnType<typeof generateThumbnail>> | null = null;
+          let thumbnailMirror: UploadResult | null = null;
+          try {
+            generatedThumbnail = await generateThumbnail(tmpPaths[i]);
+            const thumbnailBuffer = await readFile(generatedThumbnail.path);
+            const baseName = path.parse(files[i].filename || 'video').name || 'video';
+            thumbnailMirror = await uploadBuffer(thumbnailBuffer, 'image/jpeg', `${baseName}-thumbnail.jpg`);
+          } catch (err) {
+            logger.warn('[chat-attachment] Video thumbnail generation failed:', err);
+          }
           try {
             const sendResult: any = await sendNativeVideo({
               api: instance.api as any,
               videoPath: tmpPaths[i],
+              thumbnailPath: generatedThumbnail?.path,
               threadId,
               threadType: threadType as 0 | 1,
               message: caption,
             });
             const zaloMsgId = String((sendResult as any)?.msgId || (sendResult as any)?.data?.msgId || '');
             const mirror = mirrors[i];
+            const thumbUrl = thumbnailMirror?.url ?? mirror.url;
             const msg = await prisma.message.create({
               data: {
                 id: randomUUID(),
                 conversationId: id,
                 zaloMsgId: zaloMsgId || null,
+                zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
                 senderType: 'self',
                 senderUid: conversation.zaloAccount.zaloUid || '',
                 senderName: 'Staff',
-                content: JSON.stringify({ href: mirror.url, thumb: mirror.url, size: mirror.size }),
+                content: JSON.stringify({
+                  href: mirror.url,
+                  thumb: thumbUrl,
+                  thumbUrl,
+                  thumbnail: thumbUrl,
+                  size: mirror.size,
+                }),
                 contentType: 'video',
                 sentAt: new Date(),
                 repliedByUserId: user.id,
@@ -204,21 +235,31 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
             );
             const zaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
             const mirror = mirrors[i];
+            const thumbUrl = thumbnailMirror?.url ?? mirror.url;
             const msg = await prisma.message.create({
               data: {
                 id: randomUUID(),
                 conversationId: id,
                 zaloMsgId: zaloMsgId || null,
+                zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
                 senderType: 'self',
                 senderUid: conversation.zaloAccount.zaloUid || '',
                 senderName: 'Staff',
-                content: JSON.stringify({ href: mirror.url, thumb: mirror.url, size: mirror.size }),
+                content: JSON.stringify({
+                  href: mirror.url,
+                  thumb: thumbUrl,
+                  thumbUrl,
+                  thumbnail: thumbUrl,
+                  size: mirror.size,
+                }),
                 contentType: 'video',
                 sentAt: new Date(),
                 repliedByUserId: user.id,
               },
             });
             created.push(msg);
+          } finally {
+            await generatedThumbnail?.cleanup().catch(() => {});
           }
         }
 
@@ -241,6 +282,7 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
               id: randomUUID(),
               conversationId: id,
               zaloMsgId: zaloMsgId || null,
+              zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
               senderType: 'self',
               senderUid: conversation.zaloAccount.zaloUid || '',
               senderName: 'Staff',
@@ -259,7 +301,16 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
         });
 
         for (const m of created) {
-          io?.emit('chat:message', { accountId: conversation.zaloAccountId, message: m, conversationId: id });
+          // PRIVACY 2026-05-22: kèm _privacyMeta cho FE realtime blur
+          io?.emit('chat:message', {
+            accountId: conversation.zaloAccountId,
+            message: m,
+            conversationId: id,
+            _privacyMeta: {
+              privacyMode: conversation.zaloAccount.privacyMode,
+              ownerUserId: conversation.zaloAccount.ownerUserId,
+            },
+          });
         }
 
         return { messages: created };

@@ -99,26 +99,14 @@
             @delete="onDelete"
             @ai-parse="onAiParse"
           />
-          <!-- AI parse banner -->
+          <!-- AI no-intent banner — 5s auto-hide khi cả rule-based + AI fail.
+               Khi hasIntent=true → popup unified AppointmentEditor trực tiếp (xem onAiParse). -->
           <div
-            v-if="aiResult.get((item.data as Note).id) || aiNoIntent.has((item.data as Note).id)"
-            class="ai-suggestion-banner"
-            :class="{ muted: aiNoIntent.has((item.data as Note).id) }"
+            v-if="aiNoIntent.has((item.data as Note).id)"
+            class="ai-suggestion-banner muted"
           >
-            <template v-if="aiResult.get((item.data as Note).id)">
-              <span class="ai-icon">{{ aiResult.get((item.data as Note).id)?.source === 'fallback' ? '⚙️' : '🤖' }}</span>
-              <span class="ai-text">
-                <strong v-if="aiResult.get((item.data as Note).id)?.date">{{ formatAiDate(aiResult.get((item.data as Note).id)!) }}</strong>
-                <span v-else class="needs-input">cần điền thời gian</span>
-                · {{ aiResult.get((item.data as Note).id)?.summary }}
-              </span>
-              <button class="ai-create-btn" @click="openAptDialog(item.data as Note)">✏ Sửa & Tạo</button>
-              <button class="ai-dismiss" @click="aiResult.delete((item.data as Note).id)">×</button>
-            </template>
-            <template v-else>
-              <span class="ai-icon">🤖</span>
-              <span class="ai-text muted">Không phát hiện thời gian rõ ràng.</span>
-            </template>
+            <span class="ai-icon">🤖</span>
+            <span class="ai-text muted">Không phát hiện ý định hẹn — đã ẩn nút AI.</span>
           </div>
 
           <!-- Replies -->
@@ -171,13 +159,19 @@
       <div v-else-if="items.length > 0" class="end-marker">─ Hết ─</div>
     </div>
 
-    <!-- Appointment dialog (shared) -->
-    <AppointmentQuickDialog
+    <!-- Modal "Nhắc hẹn" — unified AppointmentEditor pre-fill từ AI parse (chốt 2026-05-21).
+         aiPrefill set ở onAiParse khi parse cascade thành công → popup trực tiếp. -->
+    <AppointmentEditor
       v-model="showAptDialog"
-      :contact-id="props.contactId"
-      :contact-name="props.contactName"
-      :prefill="aptPrefill"
-      header="🤖 Xác nhận tạo lịch hẹn"
+      :prefill-contact="props.contactId ? {
+        id: props.contactId,
+        fullName: props.contactName || null,
+        phone: null,
+        zaloUid: null,
+        zaloUsername: null,
+      } : null"
+      :ai-prefill="aptPrefill"
+      :current-user-id="auth.user?.id ?? null"
       @created="onAppointmentCreated"
     />
   </section>
@@ -186,13 +180,15 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { useTimeline, type ActivityLogItem, type TimelineItem } from '@/composables/use-timeline';
-import { useNotes, type Note, type ParsedAppointment } from '@/composables/use-notes';
+import { useNotes, type Note } from '@/composables/use-notes';
+import type { AiPrefill } from '@/composables/appointment-helpers';
 import { useUserPreferences } from '@/composables/use-user-preferences';
 import { useAuthStore } from '@/stores/auth';
 import { useToast } from '@/composables/use-toast';
+import { startOfOrgDay } from '@/composables/use-org-timezone';
 import NoteRow from './NoteRow.vue';
 import ActivityItem from './ActivityItem.vue';
-import AppointmentQuickDialog from './AppointmentQuickDialog.vue';
+import AppointmentEditor from '@/components/appointments/AppointmentEditor.vue';
 import {
   CATEGORY_META,
   ALL_CATEGORIES,
@@ -230,10 +226,9 @@ const timeline = useTimeline(() => props.contactId);
 const { items, loading, loadingMore, hasMore } = timeline;
 const rootNoteCount = computed(() => timeline.rootNoteCount.value);
 
-// Today badge: count items có createdAt = hôm nay
+// Today badge: count items có createdAt = hôm nay (theo org TZ — 2026-05-21 Phase B-6)
 const todayCount = computed(() => {
-  const now = new Date();
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfDay = startOfOrgDay(new Date())?.getTime() ?? Date.now();
   return items.value.filter(i => new Date(i.createdAt).getTime() >= startOfDay).length;
 });
 
@@ -247,13 +242,12 @@ const replyInput = ref<HTMLTextAreaElement | null>(null);
 const notesComposable = useNotes(() => props.contactId);
 const { create, update, remove, toggleReaction, aiParse, linkAppointment, saving } = notesComposable;
 
-const aiResult = ref(new Map<string, ParsedAppointment>());
 const aiNoIntent = ref(new Set<string>());
 const aiDisabled = ref(new Set<string>());
 
 const showAptDialog = ref(false);
 const aptPrefillNoteId = ref<string | null>(null);
-const aptPrefill = ref<{ date?: string | null; time?: string | null; type?: string | null; location?: string | null; summary?: string | null }>({});
+const aptPrefill = ref<AiPrefill | null>(null);
 
 /* ── Effective filter: derive categories param for backend ──────────── */
 const effectiveCategories = computed<string[] | undefined>(() => {
@@ -346,7 +340,6 @@ watch(() => props.contactId, (id) => {
   rootDraft.value = '';
   replyDraft.value = '';
   replyTarget.value = null;
-  aiResult.value.clear();
   aiNoIntent.value.clear();
   aiDisabled.value.clear();
   if (id) void bootstrap();
@@ -433,13 +426,40 @@ async function onDelete(noteId: string) {
   }
 }
 
+/**
+ * Click 🤖 AI lịch hẹn → backend cascade:
+ *   Step 1: parseAppointmentRuleBased (regex VN local, no cost)
+ *   Step 2: AI provider (Gemini) — fallback ngược lại rule-based nếu AI 429/quota
+ * Cả 2 fail (hasIntent=false) → ẩn nút forever phiên này + banner 5s.
+ * Thành công (hasIntent=true) → popup unified AppointmentEditor pre-fill TRỰC TIẾP.
+ */
 async function onAiParse(noteId: string) {
   if (aiDisabled.value.has(noteId)) return;
   toast.push('🤖 AI đang phân tích…');
   const parsed = await aiParse(noteId);
   if (parsed && parsed.hasIntent) {
-    aiResult.value.set(noteId, parsed);
-    aiNoIntent.value.delete(noteId);
+    // Tìm note để gắn body làm form.notes (reference cho sale)
+    const note = items.value.find(
+      i => i.type === 'note' && (i.data as Note).id === noteId,
+    )?.data as Note | undefined;
+    const name = (props.contactName || '').trim();
+    let title = (parsed.summary || '').trim();
+    if (title && name && !title.toLowerCase().includes(name.toLowerCase())) {
+      title = `${title} [${name}]`;
+    }
+    aptPrefillNoteId.value = noteId;
+    aptPrefill.value = {
+      date: parsed.date,
+      time: parsed.time,
+      type: parsed.type,
+      location: parsed.location,
+      title: title || null,
+      notes: note?.body || null,
+    };
+    showAptDialog.value = true;
+    if (parsed.source === 'fallback') {
+      toast.push('⚙️ AI hết quota — đã phân tích bằng quy tắc local');
+    }
   } else {
     aiDisabled.value.add(noteId);
     aiNoIntent.value.add(noteId);
@@ -450,36 +470,14 @@ async function onAiParse(noteId: string) {
   }
 }
 
-function formatAiDate(p: ParsedAppointment): string {
-  if (!p.date) return '';
-  const d = new Date(`${p.date}T${p.time || '09:00'}:00`);
-  const weekday = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][d.getDay()];
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const time = p.time ? ` · ${p.time}` : '';
-  return `${weekday} ${dd}/${mm}${time}`;
-}
-
-function openAptDialog(note: Note) {
-  const p = aiResult.value.get(note.id);
-  if (!p) return;
-  aptPrefillNoteId.value = note.id;
-  aptPrefill.value = {
-    date: p.date,
-    time: p.time,
-    type: p.type,
-    location: p.location,
-    summary: p.summary || note.body.slice(0, 160),
-  };
-  showAptDialog.value = true;
-}
-
-async function onAppointmentCreated(aptId: string) {
-  if (aptPrefillNoteId.value) {
-    await linkAppointment(aptPrefillNoteId.value, aptId);
-    aiResult.value.delete(aptPrefillNoteId.value);
+async function onAppointmentCreated(apt: { id: string }) {
+  if (aptPrefillNoteId.value && apt?.id) {
+    await linkAppointment(aptPrefillNoteId.value, apt.id);
   }
   aptPrefillNoteId.value = null;
+  aptPrefill.value = null;
+  showAptDialog.value = false;
+  toast.success('📅 Đã tạo lịch hẹn');
   emit('appointment-created');
   await timeline.refresh(effectiveCategories.value);
 }

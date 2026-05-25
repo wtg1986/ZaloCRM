@@ -60,69 +60,157 @@
       </div>
     </v-card>
 
-    <!-- Call (voice/video, incoming/outgoing, missed) — proper card -->
-    <div v-else-if="type === 'call'" class="call-card" :class="{ missed: isMissed, video: isVideo }">
+    <!-- Call (E14–E19) — 6 variant phân theo isCaller (1=sale, 0=KH) + calltype + missed.
+         Anh chốt 2026-05-21: KH gọi đến nhỡ (E17) = ALERT đỏ + bold; sale gọi ko trả lời
+         (E18) = muted xám. Nút "Gọi lại" emit event → parent (MessageThread) handle. -->
+    <div
+      v-else-if="type === 'call'"
+      class="call-card"
+      :class="{
+        missed: isMissed,
+        video: isVideo,
+        'inbound-missed': isMissed && !isCaller,
+        'outbound-noanswer': isMissed && isCaller,
+      }"
+    >
       <div class="call-icon">
         <v-icon :size="22">{{ callIconName }}</v-icon>
       </div>
       <div class="call-meta">
         <div class="call-title">{{ callLabel }}</div>
         <div v-if="!isMissed && callDuration > 0" class="call-duration">{{ formatDuration(callDuration) }}</div>
-        <div v-else-if="isMissed" class="call-subtitle">{{ isCaller ? 'Bạn đã gọi nhỡ' : 'Cuộc gọi nhỡ' }}</div>
+        <div v-else-if="isMissed && !isCaller" class="call-subtitle">KH đã gọi nhưng bạn chưa bắt máy</div>
+        <div v-else-if="isMissed && isCaller" class="call-subtitle">KH chưa bắt máy</div>
+      </div>
+      <button
+        v-if="isMissed"
+        type="button"
+        class="call-action"
+        :class="{ 'call-action-danger': !isCaller }"
+        @click="onCallback"
+      >
+        <v-icon size="14">{{ isVideo ? 'mdi-video' : 'mdi-phone' }}</v-icon>
+        Gọi lại
+      </button>
+    </div>
+
+    <!-- E21 Danh thiếp / E22 Gợi ý bạn bè (contact_card với action show.profile / recommened.user) -->
+    <div
+      v-else-if="type === 'contact_card_profile' || type === 'user_suggest'"
+      class="profile-card"
+      :class="{ 'is-suggest': type === 'user_suggest' }"
+    >
+      <div v-if="type === 'user_suggest'" class="profile-suggest-chip">
+        <v-icon size="11">mdi-account-plus</v-icon> Gợi ý kết bạn
+      </div>
+      <div class="profile-body">
+        <div class="profile-avatar">
+          <img v-if="profileAvatar" :src="profileAvatar" alt="avatar" class="profile-avatar-img" />
+          <v-icon v-else size="32" color="primary">mdi-account</v-icon>
+        </div>
+        <div class="profile-info">
+          <div class="profile-name">{{ profileName || 'Người liên hệ' }}</div>
+          <div v-if="profilePhone" class="profile-phone">
+            <v-icon size="12">mdi-phone</v-icon> {{ profilePhone }}
+          </div>
+          <div v-else-if="profileSubtitle" class="profile-phone">{{ profileSubtitle }}</div>
+        </div>
+      </div>
+      <div class="profile-actions">
+        <button
+          type="button"
+          class="profile-btn primary"
+          :title="type === 'user_suggest' ? 'Kết bạn (chưa hỗ trợ qua CRM)' : 'Mở chat với người này'"
+          @click="onOpenProfile"
+        >
+          <v-icon size="13">{{ type === 'user_suggest' ? 'mdi-account-plus-outline' : 'mdi-message-outline' }}</v-icon>
+          {{ type === 'user_suggest' ? 'Xem thông tin' : 'Mở chat' }}
+        </button>
+        <button
+          v-if="profilePhone"
+          type="button"
+          class="profile-btn"
+          title="Copy SĐT"
+          @click="copyAccount(profilePhone)"
+        >
+          <v-icon size="13">mdi-content-copy</v-icon>
+          Copy SĐT
+        </button>
       </div>
     </div>
 
-    <!-- QR Code: render ảnh QR thật từ content.description (Zalo lưu JSON string ở đó) -->
-    <a
-      v-else-if="type === 'qr_code'"
-      :href="qrImageUrl || '#'"
-      target="_blank"
-      rel="noopener"
-      class="qr-card"
-    >
-      <img v-if="qrImageUrl" :src="qrImageUrl" alt="QR Code" class="qr-image" />
+    <!-- E27 QR Code — anh chốt 2026-05-21: ảnh QR + 2 action button -->
+    <div v-else-if="type === 'qr_code'" class="qr-card-v2">
+      <div class="qr-card-header">
+        <v-icon size="14">mdi-qrcode</v-icon>
+        <span>{{ title || 'Mã QR' }}</span>
+      </div>
+      <a v-if="qrImageUrl" :href="qrImageUrl" target="_blank" rel="noopener" class="qr-image-wrap">
+        <img :src="qrImageUrl" alt="QR Code" class="qr-image" />
+      </a>
       <div v-else class="qr-fallback">
-        <v-icon icon="mdi-qrcode" size="48" color="primary" />
+        <v-icon icon="mdi-qrcode" size="56" color="primary" />
       </div>
-      <div class="qr-label">
-        <v-icon size="14" class="mr-1">mdi-qrcode</v-icon>
-        {{ title || 'Mã QR' }}
+      <div class="qr-actions">
+        <a v-if="qrImageUrl" :href="qrImageUrl" :download="`qr-${Date.now()}.png`" class="qr-btn">
+          <v-icon size="12">mdi-download</v-icon> Tải QR
+        </a>
+        <button v-if="qrImageUrl" type="button" class="qr-btn" @click="copyAccount(qrImageUrl)">
+          <v-icon size="12">mdi-link-variant</v-icon> Copy link
+        </button>
       </div>
-    </a>
+    </div>
 
-    <!-- Reminder / Calendar -->
-    <v-card v-else-if="type === 'reminder'" variant="tonal" color="warning" class="pa-3" rounded="lg">
-      <div class="d-flex align-center">
-        <v-icon icon="mdi-calendar-clock" class="mr-2" />
-        <span>{{ title || 'Nhắc hẹn' }}</span>
+    <!-- E28 Reminder / Nhắc hẹn — anh chốt 2026-05-21: chip vàng + title + body -->
+    <div v-else-if="type === 'reminder'" class="reminder-card-v2">
+      <div class="reminder-header">
+        <v-icon size="14" color="warning">mdi-bell-ring-outline</v-icon>
+        <span>Nhắc hẹn / Thông báo</span>
       </div>
-    </v-card>
+      <div v-if="title" class="reminder-title">{{ title }}</div>
+      <div v-if="reminderBody && reminderBody !== title" class="reminder-body">{{ reminderBody }}</div>
+    </div>
 
-    <!-- Poll / Vote -->
-    <v-card v-else-if="type === 'poll'" variant="tonal" color="info" class="pa-3" rounded="lg">
-      <div class="d-flex align-center mb-2">
-        <v-icon icon="mdi-poll" class="mr-2" />
-        <strong>{{ title || 'Bình chọn' }}</strong>
+    <!-- E29-E32 Poll / Bình chọn — phân biệt 4 action create/vote/update/close -->
+    <div v-else-if="type === 'poll'" class="poll-card-v2">
+      <div class="poll-header">
+        <v-icon size="14" color="info">mdi-poll</v-icon>
+        <strong>{{ pollHeaderText }}</strong>
+        <span v-if="pollClosed" class="poll-status-badge closed">ĐÃ ĐÓNG</span>
+        <span v-else-if="pollUpdated" class="poll-status-badge updated">CẬP NHẬT</span>
       </div>
-      <ul v-if="pollOptions.length" class="poll-options">
-        <li v-for="(o, i) in pollOptions" :key="i">○ {{ o }}</li>
+      <div v-if="title" class="poll-title">"{{ title }}"</div>
+      <ul v-if="pollOptions.length" class="poll-options-v2">
+        <li
+          v-for="(o, i) in pollOptions"
+          :key="i"
+          class="poll-option"
+          :class="{ 'is-selected': pollVotedIndex === i }"
+        >
+          <v-icon size="13">{{ pollVotedIndex === i ? 'mdi-radiobox-marked' : 'mdi-radiobox-blank' }}</v-icon>
+          <span class="poll-option-text">{{ o }}</span>
+        </li>
       </ul>
-    </v-card>
-
-    <!-- Note -->
-    <v-card v-else-if="type === 'note'" variant="tonal" color="orange" class="pa-3" rounded="lg">
-      <div class="d-flex align-center">
-        <v-icon icon="mdi-note-text" class="mr-2" />
-        <strong>{{ title || 'Ghi chú' }}</strong>
+      <div v-if="pollOptions.length" class="poll-footer">
+        {{ pollOptions.length }} lựa chọn{{ pollClosed ? ' · đã đóng' : '' }}
       </div>
-      <div v-if="noteBody" class="note-body mt-2" v-html="noteBody" />
-    </v-card>
+    </div>
 
-    <!-- Forwarded -->
+    <!-- E33 Note / Ghi chú — header chip cam + title bold + body styled -->
+    <div v-else-if="type === 'note'" class="note-card-v2">
+      <div class="note-header">
+        <v-icon size="14" color="warning">mdi-note-text-outline</v-icon>
+        <span>Ghi chú</span>
+      </div>
+      <div v-if="title" class="note-title">{{ title }}</div>
+      <div v-if="noteBody" class="note-body-v2" v-html="noteBody" />
+    </div>
+
+    <!-- E34 Forwarded / Chuyển tiếp — left-border tím + nội dung gốc -->
     <div v-else-if="type === 'forwarded'" class="forwarded-card">
       <div class="forwarded-header">
         <v-icon size="13" class="mr-1">mdi-share</v-icon>
-        Tin nhắn chuyển tiếp
+        Đã chuyển tiếp
       </div>
       <div v-if="forwardedText" class="forwarded-body" v-html="forwardedText" />
     </div>
@@ -210,6 +298,17 @@ const props = defineProps<{
   content: any;
 }>();
 
+// Emit "callback" cho cuộc gọi nhỡ (E17/E18) / "open-profile" cho danh thiếp E21/E22.
+const emit = defineEmits<{
+  (e: 'callback'): void;
+  (e: 'open-profile', uid: string): void;
+}>();
+function onCallback() { emit('callback'); }
+function onOpenProfile() {
+  const uid = profileUid.value;
+  if (uid) emit('open-profile', uid);
+}
+
 // ── Bank transfer ────────────────────────────────────────────────────────
 const bankName = computed<string>(() => props.content?.bankName || props.content?.bankCode || '');
 const amount = computed<number | null>(() => {
@@ -260,16 +359,71 @@ function formatDuration(seconds: number): string {
   return `${m} phút ${s} giây`;
 }
 
-// ── Generic title (reminder/poll) ────────────────────────────────────────
+// ── Generic title (reminder/poll/note) ───────────────────────────────────
 const title = computed<string>(() => props.content?.title || props.content?.name || '');
 
-// ── Poll options ─────────────────────────────────────────────────────────
+// ── E21/E22 Profile card (action='show.profile' hoặc 'recommened.user') ──
+// Zalo lưu danh thiếp dưới contact_card với params chứa userInfo. Best-effort extract.
+const profileUid = computed<string>(() => {
+  const p = paramsObj.value;
+  return String(
+    p?.uid || p?.userId || props.content?.uid || props.content?.userId || '',
+  );
+});
+const profileName = computed<string>(() => {
+  const p = paramsObj.value;
+  return String(
+    p?.zaloName || p?.displayName || p?.userName || p?.name || title.value || '',
+  ).trim();
+});
+const profileAvatar = computed<string>(() => {
+  const p = paramsObj.value;
+  const a = p?.avatar || p?.avatarUrl || props.content?.thumb;
+  return typeof a === 'string' && a.startsWith('http') ? a : '';
+});
+const profilePhone = computed<string>(() => {
+  const p = paramsObj.value;
+  return String(p?.phone || p?.phoneNumber || '').trim();
+});
+const profileSubtitle = computed<string>(() => {
+  const desc = props.content?.description;
+  return typeof desc === 'string' ? desc.trim() : '';
+});
+
+// ── E28 Reminder body — Zalo lưu phần mô tả ở description hoặc params.description ──
+const reminderBody = computed<string>(() => {
+  const d = props.content?.description || paramsObj.value?.description || '';
+  return typeof d === 'string' ? d.trim() : '';
+});
+
+// ── Poll options + 4-action state (E29-E32) ─────────────────────────────
 const pollOptions = computed<string[]>(() => {
-  const opts = props.content?.options || props.content?.choices;
+  const opts = props.content?.options || props.content?.choices || paramsObj.value?.options;
   if (!Array.isArray(opts)) return [];
-  return opts
-    .map((o: unknown) => (typeof o === 'string' ? o : (o as { text?: string; label?: string })?.text || (o as { label?: string })?.label || ''))
+  return (opts as unknown[])
+    .map((o) => (typeof o === 'string' ? o : (o as { text?: string; label?: string; content?: string })?.text || (o as { label?: string })?.label || (o as { content?: string })?.content || ''))
     .filter(Boolean);
+});
+const pollAction = computed<string>(() => {
+  return String(props.content?.action || '').toLowerCase();
+});
+const pollClosed = computed<boolean>(() => pollAction.value === 'close');
+const pollUpdated = computed<boolean>(() => pollAction.value === 'update');
+const pollHeaderText = computed<string>(() => {
+  if (pollAction.value === 'create') return 'Đã tạo bình chọn';
+  if (pollAction.value === 'vote') return 'Đã bình chọn';
+  if (pollAction.value === 'update') return 'Cập nhật bình chọn';
+  if (pollAction.value === 'close') return 'Bình chọn đã đóng';
+  return 'Bình chọn';
+});
+// Index option mà user vừa vote (action=vote). Zalo gửi qua params.selectedOptionIds hoặc votedIdx.
+const pollVotedIndex = computed<number>(() => {
+  if (pollAction.value !== 'vote') return -1;
+  const p = paramsObj.value;
+  const arr = p?.selectedOptionIds || p?.selectedOptions || p?.optionIds;
+  if (Array.isArray(arr) && arr.length > 0) return Number(arr[0]);
+  const idx = p?.votedIdx ?? p?.selectedIdx;
+  return typeof idx === 'number' ? idx : -1;
 });
 
 // ════════════════════════════════════════════════════════════════════════
@@ -311,11 +465,19 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
+// 2026-05-21: Zalo TextStyle enum mapping. Full reference:
+//   b / i / u / s = bold/italic/underline/strikethrough
+//   c_RRGGBB      = color (vd c_db342e = red, c_f27806 = orange)
+//   f_NN          = font size (Zalo: f_13 small, f_18 big — default ~14)
+//   s_NN          = font size (BACK-COMPAT — code cũ dùng s_ trước khi biết Zalo enum)
+//   lst_1 / lst_2 = bullet / numbered list
 function openTagFor(st: string): string {
   if (st === 'b') return '<strong>';
   if (st === 'i') return '<em>';
   if (st === 'u') return '<u>';
+  if (st === 's') return '<s>';
   if (st.startsWith('c_')) return `<span style="color:#${st.slice(2)}">`;
+  if (st.startsWith('f_')) return `<span style="font-size:${st.slice(2)}px">`;
   if (st.startsWith('s_')) return `<span style="font-size:${st.slice(2)}px">`;
   return '';
 }
@@ -323,8 +485,8 @@ function closeTagFor(st: string): string {
   if (st === 'b') return '</strong>';
   if (st === 'i') return '</em>';
   if (st === 'u') return '</u>';
-  if (st.startsWith('c_')) return '</span>';
-  if (st.startsWith('s_')) return '</span>';
+  if (st === 's') return '</s>';
+  if (st.startsWith('c_') || st.startsWith('f_') || st.startsWith('s_')) return '</span>';
   return '';
 }
 
@@ -631,19 +793,210 @@ const linkDescription = computed<string>(() => {
 }
 .poll-options li { padding: 2px 0; }
 
-/* ════════ Call card ════════ */
+/* ════════ E21/E22 Profile / Suggest user card ════════ */
+.profile-card {
+  display: block;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--smax-grey-50, #fafbfc);
+  border: 1px solid var(--smax-grey-200, #e5e7eb);
+  max-width: 320px;
+  position: relative;
+}
+.profile-card.is-suggest { border-color: rgba(33, 150, 243, 0.35); background: rgba(33, 150, 243, 0.04); }
+.profile-suggest-chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  color: #1976d2; background: rgba(33, 150, 243, 0.12);
+  padding: 2px 7px; border-radius: 4px;
+  margin-bottom: 8px;
+}
+.profile-body { display: flex; align-items: center; gap: 12px; }
+.profile-avatar {
+  width: 48px; height: 48px; border-radius: 50%;
+  background: var(--smax-grey-100, #f1f3f5);
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden; flex-shrink: 0;
+}
+.profile-avatar-img { width: 100%; height: 100%; object-fit: cover; }
+.profile-info { flex: 1; min-width: 0; }
+.profile-name {
+  font-weight: 600; font-size: 14px; color: var(--smax-text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.profile-phone {
+  font-size: 12px; color: var(--smax-grey-700);
+  display: flex; align-items: center; gap: 3px;
+  margin-top: 2px;
+}
+.profile-actions {
+  display: flex; gap: 6px; margin-top: 10px;
+}
+.profile-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 5px 10px; border-radius: 6px;
+  border: 1px solid var(--smax-grey-300, #d1d5db);
+  background: white; color: var(--smax-text);
+  font-size: 12px; font-weight: 500; cursor: pointer;
+  transition: background 0.15s ease;
+}
+.profile-btn:hover { background: var(--smax-grey-100, #f3f4f6); }
+.profile-btn.primary {
+  border-color: var(--smax-primary, #2962ff);
+  background: var(--smax-primary, #2962ff);
+  color: white;
+}
+.profile-btn.primary:hover { filter: brightness(0.95); }
+
+/* ════════ E27 QR Code v2 ════════ */
+.qr-card-v2 {
+  display: block;
+  padding: 10px;
+  border-radius: 10px;
+  background: white;
+  border: 1px solid var(--smax-grey-200, #e5e7eb);
+  max-width: 220px;
+}
+.qr-card-header {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 12px; font-weight: 600; color: var(--smax-grey-700);
+  margin-bottom: 8px;
+}
+.qr-image-wrap { display: block; }
+.qr-actions {
+  display: flex; gap: 6px; margin-top: 8px;
+}
+.qr-btn {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 4px 8px; border-radius: 5px;
+  border: 1px solid var(--smax-grey-300);
+  background: var(--smax-grey-50);
+  font-size: 11px; color: var(--smax-text);
+  cursor: pointer; text-decoration: none;
+  transition: background 0.15s ease;
+}
+.qr-btn:hover { background: var(--smax-grey-100); }
+
+/* ════════ E28 Reminder v2 ════════ */
+.reminder-card-v2 {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(255, 152, 0, 0.06);
+  border-left: 3px solid #ff9800;
+  max-width: 400px;
+}
+.reminder-header {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 11px; font-weight: 700;
+  color: #f57c00; text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.reminder-title {
+  font-weight: 600; font-size: 13.5px; color: var(--smax-text);
+  margin-bottom: 4px;
+  word-break: break-word;
+}
+.reminder-body {
+  font-size: 12.5px; color: var(--smax-grey-700);
+  line-height: 1.4; word-break: break-word; white-space: pre-wrap;
+}
+
+/* ════════ E29-E32 Poll v2 ════════ */
+.poll-card-v2 {
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(33, 150, 243, 0.05);
+  border: 1px solid rgba(33, 150, 243, 0.25);
+  max-width: 340px;
+}
+.poll-header {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 12px; color: var(--smax-grey-700);
+  margin-bottom: 6px;
+}
+.poll-header strong { font-weight: 600; color: var(--smax-text); flex: 1; }
+.poll-status-badge {
+  font-size: 9px; font-weight: 700; text-transform: uppercase;
+  padding: 2px 6px; border-radius: 4px;
+}
+.poll-status-badge.closed { color: #6b7280; background: rgba(107, 114, 128, 0.15); }
+.poll-status-badge.updated { color: #1976d2; background: rgba(33, 150, 243, 0.15); }
+.poll-title {
+  font-size: 13px; font-weight: 500; color: var(--smax-text);
+  margin-bottom: 8px; font-style: italic;
+}
+.poll-options-v2 {
+  list-style: none; padding: 0; margin: 0 0 6px;
+}
+.poll-option {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 0; font-size: 12.5px;
+  color: var(--smax-text);
+}
+.poll-option.is-selected {
+  color: var(--smax-primary, #2962ff); font-weight: 600;
+}
+.poll-option-text { flex: 1; }
+.poll-footer {
+  font-size: 11px; color: var(--smax-grey-500);
+  margin-top: 4px;
+}
+
+/* ════════ E33 Note v2 ════════ */
+.note-card-v2 {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(255, 152, 0, 0.05);
+  border-left: 3px solid #ff9800;
+  max-width: 400px;
+}
+.note-header {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 11px; font-weight: 700;
+  color: #f57c00; text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.note-title {
+  font-weight: 700; font-size: 13.5px; color: var(--smax-text);
+  margin-bottom: 4px;
+  word-break: break-word;
+}
+.note-body-v2 {
+  font-size: 13px; color: var(--smax-text);
+  line-height: 1.45; word-break: break-word; white-space: pre-wrap;
+}
+
+/* ════════ Call card — E14–E19 ════════
+   inbound-missed (E17) = KH gọi đến NHỠ, sale chưa bắt → đỏ nổi bật, font-weight cao
+   outbound-noanswer (E18) = sale gọi đi KH ko trả lời → xám nhạt, không alert */
 .call-card {
   display: inline-flex; align-items: center; gap: 11px;
   padding: 9px 13px;
   border-radius: 9px;
   background: rgba(33, 150, 243, 0.08);
   border: 1px solid rgba(33, 150, 243, 0.25);
-  min-width: 200px;
+  min-width: 220px;
 }
-.call-card.missed {
-  background: rgba(255, 82, 82, 0.07);
-  border-color: rgba(255, 82, 82, 0.30);
+/* E17: KH gọi đến NHỠ — đỏ rõ, border đậm, sale phải thấy */
+.call-card.inbound-missed {
+  background: rgba(220, 38, 38, 0.08);
+  border-color: #dc2626;
+  border-width: 1.5px;
 }
+.call-card.inbound-missed .call-title {
+  color: #dc2626;
+  font-weight: 700;
+}
+.call-card.inbound-missed .call-icon { background: #dc2626; }
+
+/* E18: sale gọi đi KH ko trả lời — xám muted, sale đã biết */
+.call-card.outbound-noanswer {
+  background: rgba(107, 114, 128, 0.06);
+  border-color: rgba(107, 114, 128, 0.30);
+}
+.call-card.outbound-noanswer .call-title { color: #6b7280; }
+.call-card.outbound-noanswer .call-icon { background: #9ca3af; }
+
 .call-card.video:not(.missed) {
   background: rgba(156, 39, 176, 0.07);
   border-color: rgba(156, 39, 176, 0.25);
@@ -656,10 +1009,9 @@ const linkDescription = computed<string>(() => {
   color: white;
   flex-shrink: 0;
 }
-.call-card.missed .call-icon { background: var(--smax-error, #ff3d00); }
 .call-card.video:not(.missed) .call-icon { background: #9c27b0; }
 
-.call-meta { display: flex; flex-direction: column; gap: 2px; }
+.call-meta { display: flex; flex-direction: column; gap: 2px; flex: 1; }
 .call-title {
   font-size: 13.5px;
   font-weight: 500;
@@ -674,6 +1026,28 @@ const linkDescription = computed<string>(() => {
   color: var(--smax-grey-700);
   font-style: italic;
 }
+
+/* Nút "Gọi lại" — chỉ show ở missed/no-answer */
+.call-action {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--smax-primary, #2962ff);
+  background: white;
+  color: var(--smax-primary, #2962ff);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.call-action:hover { background: var(--smax-primary-soft, #e3f2fd); }
+.call-action:active { transform: scale(0.97); }
+.call-action-danger {
+  border-color: #dc2626;
+  color: #dc2626;
+}
+.call-action-danger:hover { background: rgba(220, 38, 38, 0.08); }
 
 /* Rich styling — preserve normal-weight inside body, only emphasize via tags */
 :deep(.rich-title strong),

@@ -4,21 +4,32 @@
  */
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import type { Server } from 'socket.io';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { authMiddleware } from '../auth/auth-middleware.js';
 import { requireZaloAccess } from '../zalo/zalo-access-middleware.js';
 import { zaloOps, ZaloOpError } from '../../shared/zalo-operations.js';
+import { zaloPool } from '../zalo/zalo-pool.js';
+import { config } from '../../config/index.js';
 import { eventBuffer } from '../../shared/event-buffer.js';
 import { logger } from '../../shared/utils/logger.js';
+import { sendNativeVideo } from '../../shared/video-processor.js';
 import { applyContactAggregateFromMessage, applyContactInteraction, applyFriendAggregate } from '../contacts/contact-aggregate.js';
+import { markExpected as markReactionEchoExpected } from './reaction-echo-cache.js';
 
 interface ResolvedMessageRefs {
   messageId: string;
   zaloMsgId: string;
-  cliMsgId: string;
+  cliMsgId: string | null;       // null nếu tin cũ trước migration 2026-05-21 — undo sẽ trả 400
   ownerId: string;
+  senderType: string;            // 'self' = sale của org gửi (qua phone HOẶC qua CRM)
   repliedByUserId: string | null;
+  content: string | null;
+  contentType: string;
+  sentAt: Date;
 }
 
 async function resolveMessageRefs(conversationId: string, messageId: string, userOrgId: string): Promise<ResolvedMessageRefs | null> {
@@ -28,16 +39,23 @@ async function resolveMessageRefs(conversationId: string, messageId: string, use
       conversationId,
       conversation: { orgId: userOrgId },
     },
-    select: { id: true, zaloMsgId: true, senderUid: true, repliedByUserId: true },
+    select: {
+      id: true, zaloMsgId: true, zaloCliMsgId: true, senderUid: true, senderType: true,
+      repliedByUserId: true, content: true, contentType: true, sentAt: true,
+    },
   });
 
   if (!message?.zaloMsgId) return null;
   return {
     messageId: message.id,
     zaloMsgId: message.zaloMsgId,
-    cliMsgId: message.zaloMsgId,
+    cliMsgId: message.zaloCliMsgId,   // real cliMsgId từ DB — null cho tin cũ
     ownerId: message.senderUid || '',
+    senderType: message.senderType,
     repliedByUserId: message.repliedByUserId || null,
+    content: message.content,
+    contentType: message.contentType,
+    sentAt: message.sentAt,
   };
 }
 
@@ -76,6 +94,158 @@ async function getConversation(id: string, orgId: string, reply: FastifyReply) {
   return conv;
 }
 
+const FORWARD_MEDIA_TYPES = new Set(['image', 'video', 'voice', 'audio']);
+const MEDIA_URL_FIELDS: Record<string, string[]> = {
+  image: ['hdUrl', 'href', 'normalUrl', 'url', 'thumbUrl', 'thumb', 'thumbnail'],
+  video: ['href', 'fileUrl', 'url', 'normalUrl', 'hdUrl'],
+  voice: ['href', 'url', 'fileUrl'],
+  audio: ['href', 'url', 'fileUrl'],
+};
+
+function safeJsonObject(value: string | null): Record<string, unknown> | null {
+  if (!value?.trim().startsWith('{')) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function pickForwardMedia(content: string | null, contentType: string): { url: string; filename?: string; mimeType?: string } | null {
+  if (!content) return null;
+  if (/^https?:\/\//i.test(content.trim())) return { url: content.trim() };
+
+  const parsed = safeJsonObject(content);
+  if (!parsed) return null;
+
+  const fields = MEDIA_URL_FIELDS[contentType] ?? ['href', 'url', 'fileUrl'];
+  for (const field of fields) {
+    const value = parsed[field];
+    if (typeof value === 'string' && /^https?:\/\//i.test(value)) {
+      return {
+        url: value,
+        filename: pickString(parsed, ['fileName', 'filename', 'name']),
+        mimeType: pickString(parsed, ['mime', 'mimeType', 'contentType']),
+      };
+    }
+  }
+
+  const params = typeof parsed.params === 'string' ? safeJsonObject(parsed.params) : null;
+  if (params) {
+    for (const field of ['rawUrl', 'hd', 'url'] as const) {
+      const value = params[field];
+      if (typeof value === 'string' && /^https?:\/\//i.test(value)) {
+        return {
+          url: value,
+          filename: pickString(parsed, ['fileName', 'filename', 'name']),
+          mimeType: pickString(parsed, ['mime', 'mimeType', 'contentType']),
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+function pickString(source: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function extractZaloMsgId(result: unknown): string {
+  const sr = result as {
+    msgId?: string | number;
+    data?: { msgId?: string | number };
+    message?: { msgId?: string | number } | null;
+    attachment?: Array<{ msgId?: string | number }>;
+  } | null;
+  const raw = sr?.message?.msgId ?? sr?.attachment?.[0]?.msgId ?? sr?.data?.msgId ?? sr?.msgId ?? '';
+  return String(raw || '');
+}
+
+function sameOrigin(a: string, b: string): boolean {
+  try {
+    const au = new URL(a);
+    const bu = new URL(b);
+    return au.protocol === bu.protocol && au.host === bu.host;
+  } catch {
+    return false;
+  }
+}
+
+function candidateDownloadUrls(url: string): string[] {
+  const candidates = [url];
+  try {
+    if (sameOrigin(url, config.s3PublicUrl)) {
+      const publicUrl = new URL(config.s3PublicUrl);
+      const endpoint = new URL(config.s3Endpoint);
+      const original = new URL(url);
+      original.protocol = endpoint.protocol;
+      original.host = endpoint.host;
+      const publicPath = publicUrl.pathname.replace(/\/$/, '');
+      if (publicPath && original.pathname.startsWith(publicPath)) {
+        original.pathname = original.pathname.slice(publicPath.length) || '/';
+      }
+      candidates.push(original.toString());
+    }
+  } catch {
+    // keep original only
+  }
+  return [...new Set(candidates)];
+}
+
+function filenameFromUrl(url: string, contentType: string, fallback?: string): string {
+  const cleanFallback = sanitizeFileName(fallback);
+  if (cleanFallback) return cleanFallback;
+  try {
+    const name = new URL(url).pathname.split('/').filter(Boolean).pop();
+    const cleanName = sanitizeFileName(name ? decodeURIComponent(name) : undefined);
+    if (cleanName) return cleanName;
+  } catch {
+    // fall through
+  }
+  return `forward-${contentType}${extensionForContentType(contentType)}`;
+}
+
+function sanitizeFileName(value?: string): string | undefined {
+  const cleaned = value?.replace(/[^\w.\-() ]+/g, '_').replace(/^\.+/, '').trim();
+  return cleaned || undefined;
+}
+
+function extensionForContentType(contentType: string): string {
+  switch (contentType) {
+    case 'image': return '.jpg';
+    case 'video': return '.mp4';
+    case 'voice':
+    case 'audio': return '.mp3';
+    default: return '';
+  }
+}
+
+async function downloadMediaToTemp(media: { url: string; filename?: string }, contentType: string): Promise<{ path: string; cleanup: () => Promise<void> }> {
+  let lastError: unknown;
+  for (const url of candidateDownloadUrls(media.url)) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (buffer.length === 0) throw new Error('empty response');
+
+      const dir = await mkdtemp(path.join(tmpdir(), 'zalocrm-forward-'));
+      const filePath = path.join(dir, filenameFromUrl(url, contentType, media.filename));
+      await writeFile(filePath, buffer);
+      return { path: filePath, cleanup: () => rm(dir, { recursive: true, force: true }) };
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw new Error(`Không tải được file media để chuyển tiếp: ${(lastError as Error)?.message ?? String(lastError)}`);
+}
+
 function handleError(err: unknown, reply: FastifyReply) {
   if (err instanceof ZaloOpError) return reply.status(err.statusCode).send({ error: err.message });
   logger.error('[chat-ops] Unexpected error:', err);
@@ -103,18 +273,34 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
 
     try {
       const threadType = conv.threadType === 'group' ? 1 : 0;
+      const displayEmoji = reactionDisplay(reaction);
+
+      // FIX 2026-05-22 (regress bug "thả 1 tim hiện 2"): mark cache TRƯỚC khi
+      // call SDK.addReaction. Nếu mark SAU await, echo từ Zalo có thể arrive
+      // qua socket TRƯỚC khi cache được set → consumeIfExpected miss →
+      // listener tạo DB row 'zalo' DUPLICATE row 'crm' đã upsert phía dưới →
+      // FE count = 2.
+      // Lookup ownNick UID → key (zaloMsgId, emoji, ownUid) → cache 5s.
+      const ownNick = await prisma.zaloAccount.findUnique({
+        where: { id: conv.zaloAccountId },
+        select: { zaloUid: true },
+      });
+      if (ownNick?.zaloUid) {
+        markReactionEchoExpected(refs.zaloMsgId, displayEmoji, ownNick.zaloUid);
+      }
+
       // zca-js addReaction signature: (icon, dest) where dest = {data: {msgId, cliMsgId}, threadId, type}
       const result = await zaloOps.addReaction(
         conv.zaloAccountId,
         mapReaction(reaction),
         {
-          data: { msgId: refs.zaloMsgId, cliMsgId: refs.cliMsgId },
+          data: { msgId: refs.zaloMsgId, cliMsgId: refs.cliMsgId ?? refs.zaloMsgId },
           threadId: conv.externalThreadId || '',
           type: threadType,
         },
       );
-      eventBuffer.recordReaction(id, refs.messageId, user.id, user.email, reaction, 'add');
-      const displayEmoji = reactionDisplay(reaction);
+      // Phase A reaction fix (2026-05-21): bỏ eventBuffer.recordReaction để tránh
+      // double-emit. Giữ duy nhất direct emit phía dưới.
       // Multi-emoji: upsert keyed theo (messageId, reactorId, emoji) — cùng user có thể có nhiều emoji
       await prisma.messageReaction.upsert({
         where: {
@@ -134,12 +320,16 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
           emoji: displayEmoji,
         },
       });
+      // ANTI-DRIFT FIX 2026-05-22: emit totalCount real từ DB → FE set không increment.
+      const newCount = await prisma.messageReaction.count({
+        where: { messageId: refs.messageId, emoji: displayEmoji },
+      });
       const io = (app as any).io as Server;
       io?.emit('chat:reactions', {
         conversationId: id,
         messageId: refs.messageId,
         msgId: refs.messageId,
-        reactions: [{ userId: user.id, userName: user.email, reaction: displayEmoji, action: 'add' }],
+        reactions: [{ userId: user.id, userName: user.email, reaction: displayEmoji, action: 'add', totalCount: newCount }],
       });
       void applyContactInteraction({
         conversationId: id,
@@ -168,12 +358,16 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
     await prisma.messageReaction.deleteMany({
       where: { messageId: refs.messageId, reactorId: user.id, emoji: displayEmoji },
     });
+    // ANTI-DRIFT FIX 2026-05-22: emit totalCount post-delete.
+    const newCount = await prisma.messageReaction.count({
+      where: { messageId: refs.messageId, emoji: displayEmoji },
+    });
     const io = (app as any).io as Server;
     io?.emit('chat:reactions', {
       conversationId: id,
       messageId: refs.messageId,
       msgId: refs.messageId,
-      reactions: [{ userId: user.id, userName: user.email, reaction: displayEmoji, action: 'remove' }],
+      reactions: [{ userId: user.id, userName: user.email, reaction: displayEmoji, action: 'remove', totalCount: newCount }],
     });
     return { success: true };
   });
@@ -208,7 +402,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
 
     try {
       const threadType = conv.threadType === 'group' ? 1 : 0;
-      await zaloOps.deleteMessage(conv.zaloAccountId, refs.zaloMsgId, refs.cliMsgId, refs.ownerId, conv.externalThreadId || '', threadType, onlyMe);
+      await zaloOps.deleteMessage(conv.zaloAccountId, refs.zaloMsgId, refs.cliMsgId ?? refs.zaloMsgId, refs.ownerId, conv.externalThreadId || '', threadType, onlyMe);
 
       if (!onlyMe) {
         await prisma.message.update({ where: { id: refs.messageId }, data: { isDeleted: true, deletedAt: new Date() } });
@@ -232,8 +426,20 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
     if (!refs) return reply.status(404).send({ error: 'Message not found' });
 
     try {
-      const threadType = conv.threadType === 'group' ? 1 : 0;
+      // 2026-05-21 ownership + cliMsgId checks:
+      // - senderType !== 'self' → không thu hồi được tin KH (Zalo không cho phép)
+      // - cliMsgId null → tin cũ trước migration, không có client id → Zalo từ chối [zalo:112]
+      if (refs.senderType !== 'self') {
+        return reply.status(403).send({ error: 'Chỉ thu hồi được tin do bạn gửi' });
+      }
+      if (!refs.cliMsgId) {
+        return reply.status(400).send({
+          error: 'Tin này không thu hồi được (thiếu client ID — tin gửi trước bản fix 2026-05-21)',
+        });
+      }
+      // Quá 24h: Zalo cũng từ chối — em không pre-check, để zca-js trả lỗi.
 
+      const threadType = conv.threadType === 'group' ? 1 : 0;
       await zaloOps.undoMessage(conv.zaloAccountId, refs.zaloMsgId, refs.cliMsgId, refs.ownerId, conv.externalThreadId || '', threadType);
       await prisma.message.update({ where: { id: refs.messageId }, data: { isDeleted: true, deletedAt: new Date() } });
 
@@ -244,6 +450,9 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
   });
 
   // ── POST /messages/:msgId/edit ───────────────────────────────────────────────
+  // 2026-05-21: zca-js KHÔNG support edit thật → edit chỉ áp dụng trên CRM, không sync Zalo.
+  // Khi sửa lần đầu: snapshot content cũ vào original_content + set edited_at.
+  // FE phải show toast cảnh báo "Chỉ sửa trên CRM" + badge "(đã sửa)" trong bubble.
   app.post('/api/v1/conversations/:id/messages/:msgId/edit', chatAccess, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;
     const { id, msgId } = request.params as { id: string; msgId: string };
@@ -258,19 +467,50 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
     if (!refs) return reply.status(404).send({ error: 'Message not found' });
 
     try {
-      if (refs.repliedByUserId !== user.id) return reply.status(403).send({ error: 'Can only edit your own messages' });
+      // 2026-05-21 fix B3: ownership check qua senderType (cả tin gửi từ phone lẫn từ CRM
+      // đều có senderType='self' — đại diện sale của org này). repliedByUserId chỉ set
+      // cho tin gửi từ CRM → check theo nó loại trừ tin từ phone (sai semantic).
+      if (refs.senderType !== 'self') return reply.status(403).send({ error: 'Chỉ sửa được tin do bạn gửi' });
 
-      const threadType = conv.threadType === 'group' ? 1 : 0;
-      await zaloOps.editMessage(conv.zaloAccountId, refs.zaloMsgId, refs.cliMsgId, content, conv.externalThreadId || '', threadType);
-      await prisma.message.update({ where: { id: refs.messageId }, data: { content } });
+      const existing = await prisma.message.findUnique({
+        where: { id: refs.messageId },
+        select: { content: true, originalContent: true },
+      });
+
+      const updated = await prisma.message.update({
+        where: { id: refs.messageId },
+        data: {
+          content: content.trim(),
+          // Chỉ set originalContent lần ĐẦU sửa (giữ snapshot gốc).
+          // Các lần sửa sau chỉ update content + editedAt.
+          originalContent: existing?.originalContent ?? existing?.content ?? null,
+          editedAt: new Date(),
+        },
+        select: { id: true, content: true, originalContent: true, editedAt: true },
+      });
 
       const io = (app as any).io as Server;
-      io?.emit('chat:message-edited', { conversationId: id, messageId: refs.messageId, zaloMsgId: refs.zaloMsgId, content });
-      return { success: true };
+      io?.emit('chat:message-edited', {
+        conversationId: id,
+        messageId: refs.messageId,
+        zaloMsgId: refs.zaloMsgId,
+        content: updated.content,
+        originalContent: updated.originalContent,
+        editedAt: updated.editedAt,
+      });
+      return {
+        success: true,
+        zaloSynced: false,
+        notice: 'Chỉ sửa trên CRM — KH ở Zalo vẫn thấy nội dung gốc',
+        message: updated,
+      };
     } catch (err) { return handleError(err, reply); }
   });
 
   // ── POST /forward ────────────────────────────────────────────────────────────
+  // Text/rich dùng native forwardMessage để giữ reference Zalo. Media thì tải file từ URL
+  // đang lưu trong DB (MinIO/R2/Zalo CDN fallback), gửi lại bằng SDK rồi persist message ở
+  // hội thoại đích để UI cập nhật ngay.
   app.post('/api/v1/conversations/:id/forward', chatAccess, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;
     const { id } = request.params as { id: string };
@@ -289,16 +529,151 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
     try {
       const targets = await prisma.conversation.findMany({
         where: { id: { in: targetConversationIds }, orgId: user.orgId },
-        select: { id: true, threadType: true, externalThreadId: true },
+        include: { zaloAccount: true },
       });
 
-      let forwarded = 0;
-      for (const target of targets) {
-        const threadType = target.threadType === 'group' ? 1 : 0;
-        await zaloOps.forwardMessage(conv.zaloAccountId, refs.zaloMsgId, target.externalThreadId || '', threadType);
-        forwarded++;
+      const validTargets = targets.filter((t) => Boolean(t.externalThreadId));
+      if (validTargets.length === 0) {
+        return reply.status(400).send({ error: 'Không có hội thoại đích hợp lệ để chuyển tiếp' });
       }
-      return { success: true, forwarded };
+
+      type FwdResp = { success?: unknown[]; fail?: unknown[] };
+      let succeeded = 0;
+      let failed = 0;
+      const io = (app as any).io as Server;
+
+      if (['text', 'rich'].includes(refs.contentType)) {
+        let textToForward = refs.content?.trim() || '';
+        if (textToForward.startsWith('{')) {
+          try {
+            const parsed = JSON.parse(textToForward);
+            textToForward = String(parsed.title || parsed.text || parsed.msg || textToForward);
+          } catch { /* keep raw */ }
+        }
+        if (!textToForward) return reply.status(400).send({ error: 'Tin gốc không có nội dung text' });
+
+        const reference = {
+          id: refs.zaloMsgId,
+          ts: refs.sentAt.getTime(),
+          logSrcType: 0,
+          fwLvl: 0,
+        };
+        const userTargets = validTargets.filter((t) => t.threadType !== 'group').map((t) => t.externalThreadId!);
+        const groupTargets = validTargets.filter((t) => t.threadType === 'group').map((t) => t.externalThreadId!);
+        if (userTargets.length) {
+          const res = (await (zaloOps.forwardMessage as any)(conv.zaloAccountId, textToForward, userTargets, 0, reference)) as FwdResp;
+          succeeded += res?.success?.length ?? userTargets.length;
+          failed += res?.fail?.length ?? 0;
+        }
+        if (groupTargets.length) {
+          const res = (await (zaloOps.forwardMessage as any)(conv.zaloAccountId, textToForward, groupTargets, 1, reference)) as FwdResp;
+          succeeded += res?.success?.length ?? groupTargets.length;
+          failed += res?.fail?.length ?? 0;
+        }
+      } else if (FORWARD_MEDIA_TYPES.has(refs.contentType)) {
+        const media = pickForwardMedia(refs.content, refs.contentType);
+        if (!media) return reply.status(400).send({ error: 'Tin gốc không có URL media để chuyển tiếp' });
+
+        const downloaded = await downloadMediaToTemp(media, refs.contentType);
+        try {
+          for (const target of validTargets) {
+            const threadType = target.threadType === 'group' ? 1 : 0;
+            const threadId = target.externalThreadId!;
+            const targetAccountId = target.zaloAccountId;
+            const instance = refs.contentType === 'video' ? zaloPool.getInstance(targetAccountId) : null;
+            let sendResult: unknown;
+            try {
+              if (refs.contentType === 'image') {
+                sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, [downloaded.path], io);
+              } else if (refs.contentType === 'video' && instance?.api) {
+                try {
+                  sendResult = await sendNativeVideo({
+                    api: instance.api as any,
+                    threadId,
+                    threadType,
+                    videoPath: downloaded.path,
+                  });
+                } catch (err) {
+                  logger.warn('[chat-ops] native forward video failed, falling back to attachment:', err);
+                  sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, [downloaded.path], io);
+                }
+              } else if (refs.contentType === 'voice' || refs.contentType === 'audio') {
+                try {
+                  sendResult = await zaloOps.sendVoice(targetAccountId, threadId, threadType, downloaded.path);
+                } catch (err) {
+                  logger.warn('[chat-ops] forward voice failed, falling back to attachment:', err);
+                  sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, [downloaded.path], io);
+                }
+              } else {
+                sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, [downloaded.path], io);
+              }
+
+              const zaloMsgId = extractZaloMsgId(sendResult);
+              const created = await prisma.message.create({
+                data: {
+                  id: randomUUID(),
+                  conversationId: target.id,
+                  zaloMsgId: zaloMsgId || null,
+                  zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
+                  senderType: 'self',
+                  senderUid: target.zaloAccount.zaloUid || '',
+                  senderName: 'Staff',
+                  content: refs.content,
+                  contentType: refs.contentType,
+                  sentAt: new Date(),
+                  repliedByUserId: user.id,
+                },
+              });
+
+              await prisma.conversation.update({
+                where: { id: target.id },
+                data: { lastMessageAt: new Date(), isReplied: true, unreadCount: 0 },
+              });
+
+              io?.emit('chat:message', {
+                accountId: target.zaloAccountId,
+                message: { ...created, zaloMsgIdNum: created.zaloMsgIdNum?.toString() ?? null },
+                conversationId: target.id,
+                _privacyMeta: {
+                  privacyMode: target.zaloAccount.privacyMode,
+                  ownerUserId: target.zaloAccount.ownerUserId,
+                },
+              });
+
+              const aggInput = {
+                conversationId: target.id,
+                message: {
+                  id: created.id,
+                  content: created.content,
+                  contentType: created.contentType,
+                  sentAt: created.sentAt,
+                  senderType: 'self' as const,
+                },
+                outboundUserId: user.id,
+              };
+              void applyContactAggregateFromMessage(aggInput);
+              void applyFriendAggregate(aggInput);
+              succeeded += 1;
+            } catch (err) {
+              failed += 1;
+              logger.error('[chat-ops] forward media target failed:', {
+                targetConversationId: target.id,
+                contentType: refs.contentType,
+                err: (err as Error).message,
+              });
+            }
+          }
+        } finally {
+          await downloaded.cleanup().catch(() => {});
+        }
+      } else {
+        return reply.status(400).send({
+          error: 'Chỉ hỗ trợ chuyển tiếp text, hình ảnh, video và audio.',
+        });
+      }
+
+      io?.emit('chat:forwarded', { conversationId: id, messageId: refs.messageId, succeeded, failed });
+      return { success: true, forwarded: succeeded, failed };
     } catch (err) { return handleError(err, reply); }
   });
 
@@ -382,6 +757,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
           id: randomUUID(),
           conversationId: id,
           zaloMsgId: zaloMsgId || null,
+          zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
           senderType: 'self',
           senderUid: '',
           senderName: 'Staff',

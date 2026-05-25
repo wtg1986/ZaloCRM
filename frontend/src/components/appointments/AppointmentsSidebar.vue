@@ -1,6 +1,22 @@
 <template>
   <aside class="apt-sidebar">
+    <!-- Nguồn (đẩy lên trên) — 3-tab segmented -->
     <div class="side-section">
+      <h4>Nguồn</h4>
+      <div class="scope-toggle">
+        <button
+          v-for="opt in sourceOptions"
+          :key="opt.value"
+          :class="{ active: source === opt.value }"
+          @click="$emit('update:source', opt.value)"
+        >{{ opt.label }}</button>
+      </div>
+    </div>
+
+    <!-- Phạm vi (dưới Nguồn) — segmented + nếu pick Nhóm/Tất cả thì xổ
+         danh sách sale ra dưới dạng expansion box (đậm hơn để hiểu là
+         sub-content được xổ ra từ Phạm vi). -->
+    <div class="side-section side-section--with-expansion">
       <h4>Phạm vi</h4>
       <div class="scope-toggle">
         <button
@@ -10,21 +26,27 @@
           @click="$emit('update:scope', opt.value)"
         >{{ opt.label }}</button>
       </div>
-    </div>
 
-    <div v-if="scope !== 'me'" class="side-section">
-      <h4>Sale phụ trách</h4>
-      <div class="sale-list">
-        <div
-          v-for="u in users"
-          :key="u.id"
-          class="sale"
-          :class="{ active: selectedSales.has(u.id) }"
-          @click="toggleSale(u.id)"
-        >
-          <span class="swatch" :style="{ background: saleColor(u.id).bg }" />
-          <span class="name">{{ u.fullName }}<span v-if="u.id === currentUserId"> (tôi)</span></span>
-          <span class="count">{{ countBySale[u.id] || 0 }}</span>
+      <!-- Expansion box: chỉ hiện khi scope = team/all. Bg đậm hơn surface
+           bình thường, border + arrow connector để user hiểu xổ ra từ tab -->
+      <div v-if="scope !== 'me'" class="scope-expansion">
+        <div class="scope-expansion__arrow"></div>
+        <div class="scope-expansion__head">
+          Sale phụ trách
+          <span class="badge">{{ users.length }}</span>
+        </div>
+        <div class="sale-list">
+          <div
+            v-for="u in users"
+            :key="u.id"
+            class="sale"
+            :class="{ active: selectedSales.has(u.id) }"
+            @click="toggleSale(u.id)"
+          >
+            <span class="swatch" :style="{ background: saleColor(u.id).bg }" />
+            <span class="name">{{ u.fullName }}<span v-if="u.id === currentUserId"> (tôi)</span></span>
+            <span class="count">{{ countBySale[u.id] || 0 }}</span>
+          </div>
         </div>
       </div>
     </div>
@@ -50,56 +72,14 @@
       </div>
     </div>
 
-    <div class="side-section">
-      <h4>Trạng thái</h4>
-      <div class="filter-grid">
-        <label v-for="opt in APPOINTMENT_STATUS_OPTIONS" :key="opt.value" class="filter-chip">
-          <input
-            type="checkbox"
-            :checked="selectedStatuses.has(opt.value)"
-            @change="toggleStatus(opt.value)"
-          />
-          <span class="pill" :class="`status-${opt.value}`">{{ opt.text }}</span>
-          <span class="count">{{ countByStatus[opt.value] || 0 }}</span>
-        </label>
-      </div>
-    </div>
-
-    <div class="side-section">
-      <h4>Loại lịch hẹn</h4>
-      <div class="filter-grid">
-        <label v-for="opt in APPOINTMENT_TYPE_OPTIONS" :key="opt.value" class="filter-chip">
-          <input
-            type="checkbox"
-            :checked="selectedTypes.has(opt.value)"
-            @change="toggleType(opt.value)"
-          />
-          <span class="pill type">{{ typeIcon(opt.value) }} {{ opt.text }}</span>
-          <span class="count">{{ countByType[opt.value] || 0 }}</span>
-        </label>
-      </div>
-    </div>
-
-    <div class="side-section">
-      <h4>Nguồn</h4>
-      <div class="source-row">
-        <button
-          v-for="opt in sourceOptions"
-          :key="opt.value"
-          class="source-btn"
-          :class="{ active: source === opt.value }"
-          @click="$emit('update:source', opt.value)"
-        >
-          {{ opt.label }}<span class="count">{{ opt.count }}</span>
-        </button>
-      </div>
-    </div>
+    <!-- Trạng thái + Loại lịch hẹn: moved lên hero-row2 (chung hàng Tuần/Danh sách)
+         để sidebar focus vào filter "phạm vi & nguồn & ngày", không trùng UI -->
 
     <!-- Cream callout: keyboard tip -->
     <div class="side-section">
       <div class="sidebar-callout">
         <strong>💡 Mẹo nhanh</strong><br>
-        Bấm <kbd>N</kbd> để tạo lịch hẹn nhanh · <kbd>←</kbd><kbd>→</kbd> chuyển tuần · click slot trống để chọn giờ
+        Bấm <kbd>N</kbd> để tạo nhắc hẹn nhanh · <kbd>←</kbd><kbd>→</kbd> chuyển tuần · click slot trống để chọn giờ
       </div>
     </div>
 
@@ -127,8 +107,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import {
-  APPOINTMENT_STATUS_OPTIONS,
-  APPOINTMENT_TYPE_OPTIONS,
   saleColor,
   typeIcon,
   typeLabel,
@@ -137,6 +115,7 @@ import {
   type AppointmentEx as Appointment,
 } from '@/composables/appointment-helpers';
 import type { OrgUser } from '@/composables/use-users';
+import { orgDayKey, getOrgParts } from '@/composables/use-org-timezone';
 
 const props = defineProps<{
   scope: 'me' | 'team' | 'all';
@@ -176,16 +155,8 @@ function toggleSale(id: string) {
   if (next.has(id)) next.delete(id); else next.add(id);
   emit('update:selectedSales', next);
 }
-function toggleStatus(v: string) {
-  const next = new Set(props.selectedStatuses);
-  if (next.has(v)) next.delete(v); else next.add(v);
-  emit('update:selectedStatuses', next);
-}
-function toggleType(v: string) {
-  const next = new Set(props.selectedTypes);
-  if (next.has(v)) next.delete(v); else next.add(v);
-  emit('update:selectedTypes', next);
-}
+// toggleStatus + toggleType moved up to AppointmentsView (dropdown filter ở hero-row2)
+// countByStatus + countByType cũng compute trên AppointmentsView level
 
 const countBySale = computed(() => {
   const m: Record<string, number> = {};
@@ -195,28 +166,21 @@ const countBySale = computed(() => {
   }
   return m;
 });
-const countByStatus = computed(() => {
-  const m: Record<string, number> = {};
-  for (const a of props.appointments) m[a.status] = (m[a.status] || 0) + 1;
-  return m;
-});
-const countByType = computed(() => {
-  const m: Record<string, number> = {};
-  for (const a of props.appointments) m[a.type] = (m[a.type] || 0) + 1;
-  return m;
-});
 
-const sourceOptions = computed(() => {
-  const zalo = props.appointments.filter(a => a.source === 'zalo').length;
-  const manual = props.appointments.filter(a => a.source === 'manual').length;
-  return [
-    { value: 'all' as const, label: 'Tất cả', count: zalo + manual },
-    { value: 'zalo' as const, label: '🔔 Zalo', count: zalo },
-    { value: 'manual' as const, label: '✏️ Thủ công', count: manual },
-  ];
-});
+// 3-tab segmented giống Phạm vi — KHÔNG emoji/icon để label cân chiều ngang
+// (3 cột chia đều, tránh "🔔 Zalo" wide hơn "Tất cả" gây bể alignment).
+const sourceOptions = [
+  { value: 'all' as const,    label: 'Tất cả' },
+  { value: 'zalo' as const,   label: 'Zalo' },
+  { value: 'manual' as const, label: 'Thủ công' },
+];
 
-const miniMonthLabel = computed(() => `${VN_MONTHS[props.visibleMonth.getMonth()]}, ${props.visibleMonth.getFullYear()}`);
+// 2026-05-21 Phase B-3: header "tháng X, năm Y" + mini-cells theo org TZ.
+const miniMonthLabel = computed(() => {
+  const p = getOrgParts(props.visibleMonth);
+  if (!p) return '';
+  return `${VN_MONTHS[p.month - 1]}, ${p.year}`;
+});
 
 function shiftMonth(delta: number) {
   const d = new Date(props.visibleMonth);
@@ -225,7 +189,7 @@ function shiftMonth(delta: number) {
 }
 
 function isoDay(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return orgDayKey(d);
 }
 
 const selectedIso = computed(() => isoDay(props.selectedDate));
@@ -240,23 +204,28 @@ const apptByDay = computed(() => {
 });
 
 const miniCells = computed(() => {
-  const year = props.visibleMonth.getFullYear();
-  const month = props.visibleMonth.getMonth();
-  const firstOfMonth = new Date(year, month, 1);
+  // Phase B-3: lấy năm/tháng đang xem theo ORG TZ, build 6×7 cells (42 ô)
+  // bắt đầu từ thứ Hai của tuần chứa ngày 1.
+  const visibleParts = getOrgParts(props.visibleMonth);
+  if (!visibleParts) return [];
+  const year = visibleParts.year;
+  const month = visibleParts.month; // 1-12
+  const firstOfMonth = new Date(year, month - 1, 1);
   const offset = (firstOfMonth.getDay() + 6) % 7;
-  const start = new Date(year, month, 1 - offset);
-  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const start = new Date(year, month - 1, 1 - offset);
+  const todayKey = orgDayKey(new Date());
   const cells: { date: Date; iso: string; day: number; muted: boolean; isToday: boolean; count: number }[] = [];
   for (let i = 0; i < 42; i++) {
     const d = new Date(start);
     d.setDate(start.getDate() + i);
     const iso = isoDay(d);
+    const dParts = getOrgParts(d);
     cells.push({
       date: d,
       iso,
-      day: d.getDate(),
-      muted: d.getMonth() !== month,
-      isToday: d.getTime() === today.getTime(),
+      day: dParts?.day ?? d.getDate(),
+      muted: (dParts?.month ?? d.getMonth() + 1) !== month,
+      isToday: iso === todayKey,
       count: apptByDay.value[iso] || 0,
     });
   }
@@ -276,8 +245,9 @@ const upcomingPreview = computed(() => {
 });
 
 function fmtTime(a: Appointment): string {
-  const d = appointmentStart(a);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const p = getOrgParts(appointmentStart(a));
+  if (!p) return '';
+  return `${String(p.hour).padStart(2, '0')}:${String(p.minute).padStart(2, '0')}`;
 }
 </script>
 
@@ -327,18 +297,67 @@ function fmtTime(a: Appointment): string {
   color: var(--at-on-primary);
 }
 
-/* Sale filter list */
+/* Expansion box xổ ra từ Phạm vi khi pick Nhóm/Tất cả.
+   Bg đậm hơn surface-soft xung quanh + arrow connector để user hiểu
+   nó là sub-content thuộc về tab Phạm vi vừa bấm. */
+.scope-expansion {
+  position: relative;
+  margin-top: var(--at-s-xs);
+  padding: var(--at-s-sm);
+  background: var(--at-surface-strong);
+  border: 1px solid var(--at-border-strong);
+  border-radius: var(--at-r-md);
+}
+.scope-expansion__arrow {
+  position: absolute;
+  top: -7px;
+  left: 24px;
+  width: 12px; height: 12px;
+  background: var(--at-surface-strong);
+  border-left: 1px solid var(--at-border-strong);
+  border-top: 1px solid var(--at-border-strong);
+  transform: rotate(45deg);
+}
+.scope-expansion__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: var(--at-s-xs);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--at-ink);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.scope-expansion__head .badge {
+  font-size: 10px;
+  background: var(--at-ink);
+  color: var(--at-on-primary);
+  padding: 1px 6px;
+  border-radius: var(--at-r-pill);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+/* Sale filter list (trong expansion box) */
 .sale-list { display: flex; flex-direction: column; gap: 2px; }
 .sale-list .sale {
   display: flex; align-items: center; gap: var(--at-s-xs);
   padding: 6px 8px;
   border-radius: var(--at-r-sm);
+  background: var(--at-canvas);
   cursor: pointer;
   font-size: 13px;
   color: var(--at-body);
 }
-.sale-list .sale:active { background: var(--at-canvas); }
-.sale-list .sale.active { color: var(--at-ink); font-weight: 500; background: var(--at-canvas); }
+.sale-list .sale:active { background: var(--at-surface-soft); }
+.sale-list .sale.active {
+  color: var(--at-ink);
+  font-weight: 500;
+  background: var(--at-canvas);
+  box-shadow: inset 0 0 0 1px var(--at-ink);
+}
 .sale-list .sale .swatch {
   width: 10px; height: 10px;
   border-radius: 50%;
@@ -459,40 +478,6 @@ function fmtTime(a: Appointment): string {
   color: var(--at-muted);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
-}
-
-/* Source row */
-.source-row { display: flex; gap: 6px; flex-wrap: wrap; }
-.source-btn {
-  flex: 1;
-  min-width: 64px;
-  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
-  padding: 6px 10px;
-  border-radius: var(--at-r-pill);
-  background: var(--at-canvas);
-  border: 1px solid var(--at-hairline);
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--at-body);
-  cursor: pointer;
-  font-family: inherit;
-}
-.source-btn.active {
-  background: var(--at-ink);
-  color: var(--at-on-primary);
-  border-color: var(--at-ink);
-}
-.source-btn .count {
-  background: rgba(255,255,255,0.18);
-  color: inherit;
-  padding: 0 6px;
-  border-radius: var(--at-r-pill);
-  font-size: 10px;
-  font-weight: 500;
-}
-.source-btn:not(.active) .count {
-  background: var(--at-surface-soft);
-  color: var(--at-muted);
 }
 
 /* Upcoming preview */

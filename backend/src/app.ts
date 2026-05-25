@@ -3,6 +3,13 @@
  * Bootstraps Fastify server with all plugins, Socket.IO, and route handlers.
  * The process never exits — all errors are caught and logged.
  */
+
+// BigInt → string khi JSON.stringify (Fastify response serializer).
+// Cần thiết cho Message.zaloMsgIdNum (Prisma trả BigInt, JSON native fail without this).
+(BigInt.prototype as unknown as { toJSON: () => string }).toJSON = function () {
+  return this.toString();
+};
+
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import fastifyJwt from '@fastify/jwt';
@@ -168,6 +175,16 @@ async function bootstrap() {
   // Phase 8 — Engagement heatmap timeline + admin recompute/backfill
   const { registerEngagementRoutes } = await import('./modules/engagement/engagement-routes.js');
   await registerEngagementRoutes(app);
+  // RBAC Phase Phân Quyền 2026-05-21 — Department + PermissionGroup (M2 Getfly Clone)
+  const { registerDepartmentRoutes } = await import('./modules/rbac/department-routes.js');
+  await registerDepartmentRoutes(app);
+  const { registerPermissionGroupRoutes } = await import('./modules/rbac/permission-group-routes.js');
+  await registerPermissionGroupRoutes(app);
+  const { registerUserAssignmentRoutes } = await import('./modules/rbac/user-assignment-routes.js');
+  await registerUserAssignmentRoutes(app);
+  // Phase Riêng Tư 2026-05-22 — PIN-gated visual privacy
+  const { registerPrivacyRoutes } = await import('./modules/privacy/privacy-routes.js');
+  await registerPrivacyRoutes(app);
   await app.register(zaloLabelsRoutes);
   await app.register(zinstantProxyRoutes);
   await app.register(dashboardRoutes);
@@ -260,6 +277,13 @@ async function bootstrap() {
     // native app mà friend_event listener không bắt được (xem friend-sync-cron.ts)
     const { startFriendSyncCron } = await import('./modules/zalo/friend-sync-cron.js');
     startFriendSyncCron(io);
+    // Phase ZaloAccounts redesign 2026-05-22 — status log: backfill open records 1
+    // lần lúc startup (idempotent), rồi start checkpoint cron (*/5 min) reconcile
+    // orphan records sau crash. Uptime accuracy = 5p resolution.
+    const { backfillStatusLog } = await import('./modules/zalo/status-log-backfill.js');
+    backfillStatusLog().catch((err) => logger.error('[status-log-backfill] failed:', err));
+    const { startStatusLogCheckpointCron } = await import('./modules/zalo/status-log-checkpoint-cron.js');
+    startStatusLogCheckpointCron();
     // Phase 6 — Lead Scoring background jobs (decay hourly + stuck detection 6am daily)
     const { startScoringScheduler } = await import('./modules/scoring/scoring-scheduler.js');
     startScoringScheduler({ enabled: config.nodeEnv !== 'test' });

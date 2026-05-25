@@ -136,16 +136,31 @@ export const CONSENT_OPTIONS = [
   { text: 'Đã rút', value: 'revoked' },
 ];
 
+// Label tiếng Việt cho preview ngắn (ContactsView, ContactDetailDialog "tin cuối").
+// Phải cover MỌI content_type backend trả (registry E01–E34 + R) — anh đã chốt 2026-05-21.
+// Tin có nội dung text thì messagePreview() ưu tiên trích content; map này chỉ là fallback
+// khi content rỗng (media/sự kiện thuần).
 export const CONTENT_TYPE_LABEL: Record<string, string> = {
+  text: 'Tin nhắn',
   image: '📷 Hình ảnh',
   file: '📎 File',
   sticker: '🎴 Sticker',
-  voice: '🎤 Voice',
+  voice: '🎤 Tin thoại',
+  audio: '🎤 Tin thoại',
   video: '🎥 Video',
-  gif: '🎞️ GIF',
+  gif: '🎞 GIF',
   link: '🔗 Liên kết',
   contact_card: '👤 Danh thiếp',
   location: '📍 Vị trí',
+  // 8 entry bổ sung — proposal G3 fix (trước đây hiện raw "bank_transfer", "call", ...)
+  bank_transfer: '💳 Chuyển khoản',
+  call: '📞 Cuộc gọi',
+  qr_code: '🔲 Mã QR',
+  reminder: '⏰ Nhắc hẹn',
+  poll: '📊 Bình chọn',
+  note: '📝 Ghi chú',
+  forwarded: '↪️ Chuyển tiếp',
+  rich: '✨ Tin có định dạng',
 };
 
 /** "Hôm nay 12:49" / "Hôm qua 23:14" / "5/5/2026 14:32" — theo org TZ. */

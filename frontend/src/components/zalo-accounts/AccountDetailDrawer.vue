@@ -52,10 +52,114 @@
           </div>
         </div>
 
+        <!-- Phase metrics layer 2026-05-22 — Số liệu hôm nay -->
+        <section v-if="account.metricsToday" class="d-section">
+          <div class="h"><span>📊 Số liệu hôm nay</span></div>
+
+          <!-- Tin nhắn -->
+          <div class="metrics-group">
+            <div class="metrics-title">Tin nhắn</div>
+            <div class="metrics-grid">
+              <div class="metric-cell">
+                <div class="metric-icon icon-friend">◐</div>
+                <div class="metric-info">
+                  <div class="metric-label">Nhận từ Bạn bè</div>
+                  <div class="metric-value">{{ formatNum(account.metricsToday.msgReceivedFromFriends) }}</div>
+                </div>
+              </div>
+              <div class="metric-cell">
+                <div class="metric-icon icon-stranger">◑</div>
+                <div class="metric-info">
+                  <div class="metric-label">Nhận từ Người lạ</div>
+                  <div class="metric-value">{{ formatNum(account.metricsToday.msgReceivedFromStrangers) }}</div>
+                </div>
+              </div>
+              <div class="metric-cell">
+                <div class="metric-icon icon-user">▶</div>
+                <div class="metric-info">
+                  <div class="metric-label">Sale gửi</div>
+                  <div class="metric-value">{{ formatNum(account.metricsToday.msgSentByUser) }}</div>
+                </div>
+              </div>
+              <div class="metric-cell">
+                <div class="metric-icon icon-bot">◆</div>
+                <div class="metric-info">
+                  <div class="metric-label">Bot gửi</div>
+                  <div class="metric-value">{{ formatNum(account.metricsToday.msgSentByBot) }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Friend-add -->
+          <div class="metrics-group">
+            <div class="metrics-title">Lời mời kết bạn</div>
+            <div class="metrics-grid grid-4">
+              <div class="metric-cell tight">
+                <div class="metric-label">Gửi đi</div>
+                <div class="metric-value">{{ formatNum(account.metricsToday.friendReqSent) }}</div>
+              </div>
+              <div class="metric-cell tight">
+                <div class="metric-label" style="color:#047857">Đồng ý</div>
+                <div class="metric-value" style="color:#047857">{{ formatNum(account.metricsToday.friendReqAccepted) }}</div>
+              </div>
+              <div class="metric-cell tight">
+                <div class="metric-label" style="color:#B91C1C">Từ chối</div>
+                <div class="metric-value" style="color:#B91C1C">{{ formatNum(account.metricsToday.friendReqRejected) }}</div>
+              </div>
+              <div class="metric-cell tight">
+                <div class="metric-label" style="color:#9CA3AF">Tỉ lệ accept</div>
+                <div class="metric-value">{{ acceptRate(account.metricsToday) }}%</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Phone search -->
+          <div class="metrics-group">
+            <div class="metrics-title">Tìm SĐT trên Zalo</div>
+            <div class="metrics-grid grid-3">
+              <div class="metric-cell tight">
+                <div class="metric-label">Tổng search</div>
+                <div class="metric-value">{{ formatNum(account.metricsToday.phoneSearchTotal) }}</div>
+              </div>
+              <div class="metric-cell tight">
+                <div class="metric-label" style="color:#047857">Có Zalo</div>
+                <div class="metric-value" style="color:#047857">{{ formatNum(account.metricsToday.phoneSearchFoundZalo) }}</div>
+              </div>
+              <div class="metric-cell tight">
+                <div class="metric-label" style="color:#9CA3AF">Không có</div>
+                <div class="metric-value">{{ formatNum(account.metricsToday.phoneSearchNoZalo) }}</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- OWNER (chính chủ) — Phase 4 2026-05-22 -->
+        <section v-if="account.owner" class="d-section">
+          <div class="h">
+            <span>Chính chủ (Owner)</span>
+            <a v-if="account.canManage" class="link" @click="$emit('reassign-owner', account)">⚙ Chuyển nhượng</a>
+          </div>
+          <div class="owner-row-detail">
+            <div class="avatar-mini" :style="{ background: avatarColor(account.owner.fullName || account.owner.email, 0) }">
+              {{ shortName(account.owner.fullName || account.owner.email) }}
+            </div>
+            <div class="nm-col">
+              <div class="nm">{{ account.owner.fullName || account.owner.email }}</div>
+              <div class="em">{{ account.owner.email }}</div>
+            </div>
+            <div class="owner-meta">
+              <span v-if="account.ownerDepartment" class="dept-chip">{{ account.ownerDepartment.name }}</span>
+              <span v-if="account.ownerDeptRole === 'leader'" class="role-chip leader">Trưởng phòng</span>
+              <span v-else-if="account.ownerDeptRole === 'deputy'" class="role-chip deputy">Phó phòng</span>
+            </div>
+          </div>
+        </section>
+
         <!-- CREW LIST -->
         <section class="d-section">
           <div class="h">
-            <span>Sale phụ trách ({{ account.crew.length }})</span>
+            <span>Đội ngũ chia sẻ ({{ account.crew.length }})</span>
             <a class="link" @click="$emit('add-crew', account.id)">+ Thêm sale</a>
           </div>
           <div v-if="!account.crew.length" class="muted-italic">Chưa gán sale nào</div>
@@ -143,10 +247,21 @@ const emit = defineEmits<{
   (e: 'add-crew', accountId: string): void;
   (e: 'remove-crew', payload: { accountId: string; accessId: string }): void;
   (e: 'action', payload: { accountId: string; action: 'sync-contacts' | 'sync-history' | 'reconnect' | 'qr-login' | 'edit-proxy' | 'disconnect' | 'delete' }): void;
+  (e: 'reassign-owner', account: EnrichedAccount): void;
 }>();
 
 function close() {
   emit('update:modelValue', false);
+}
+
+// Phase metrics layer 2026-05-22
+function formatNum(n: number | null | undefined): string {
+  if (n == null) return '0';
+  return n.toLocaleString('vi-VN');
+}
+function acceptRate(m: { friendReqSent: number; friendReqAccepted: number }): number {
+  if (!m.friendReqSent) return 0;
+  return Math.round((m.friendReqAccepted / m.friendReqSent) * 100);
 }
 
 function statusClass(live: string): string {
@@ -424,6 +539,57 @@ function maskPhone(p: string): string {
   border-radius: 99px;
 }
 .role-badge.owner { background: #DBEAFE; color: #1E40AF }
+
+/* Owner row in detail drawer — Phase 4 2026-05-22 */
+.owner-row-detail {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; background: #EFF6FF; border: 1px solid #DBEAFE; border-radius: 8px;
+}
+.owner-meta { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+.dept-chip {
+  background: #F3F4F6; color: #374151; font-size: 11px; font-weight: 600;
+  padding: 2px 8px; border-radius: 6px;
+}
+.role-chip {
+  font-size: 9.5px; font-weight: 700; padding: 1px 7px; border-radius: 9999px;
+  text-transform: uppercase; letter-spacing: 0.3px;
+}
+.role-chip.leader { background: #DBEAFE; color: #1D4ED8; }
+.role-chip.deputy { background: #FEF3C7; color: #92400E; }
+
+/* Phase metrics layer 2026-05-22 — Số liệu hôm nay block */
+.metrics-group { margin-bottom: 14px; }
+.metrics-group:last-child { margin-bottom: 0; }
+.metrics-title {
+  font-size: 11px; color: #6B7280; text-transform: uppercase;
+  letter-spacing: 0.04em; font-weight: 700; margin-bottom: 6px;
+}
+.metrics-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;
+}
+.metrics-grid.grid-3 { grid-template-columns: repeat(3, 1fr); }
+.metrics-grid.grid-4 { grid-template-columns: repeat(4, 1fr); }
+.metric-cell {
+  display: flex; align-items: center; gap: 8px;
+  background: #F9FAFB; border: 1px solid #F3F4F6; border-radius: 8px;
+  padding: 8px 10px;
+}
+.metric-cell.tight { flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 10px; }
+.metric-icon {
+  width: 28px; height: 28px; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 700; flex-shrink: 0;
+}
+.metric-icon.icon-friend   { background: #E0E7FF; color: #4338CA; }
+.metric-icon.icon-stranger { background: #F3F4F6; color: #6B7280; }
+.metric-icon.icon-user     { background: #DCFCE7; color: #15803D; }
+.metric-icon.icon-bot      { background: #F5F3FF; color: #6D28D9; }
+.metric-info { min-width: 0; }
+.metric-label { font-size: 11px; color: #6B7280; line-height: 1.2; }
+.metric-value {
+  font-size: 16px; font-weight: 700; color: #111827;
+  font-variant-numeric: tabular-nums; line-height: 1.2; margin-top: 2px;
+}
 .role-badge.editor { background: #D1FAE5; color: #065F46 }
 .role-badge.viewer { background: #F3F4F6; color: #4B5563 }
 .x {

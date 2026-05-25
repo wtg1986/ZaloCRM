@@ -27,9 +27,22 @@ export interface EnrichedAccount {
   lastConnectedAt: string | null;
   createdAt: string;
   owner: { id: string; fullName: string | null; email: string } | null;
+  ownerUserId: string | null;
+  /** Phase 4 2026-05-22: phòng ban của owner (cho cột Department + filter chip Phòng ban) */
+  ownerDepartment: { id: string; name: string; path: string } | null;
+  ownerDeptRole: 'leader' | 'deputy' | 'member' | null;
+  /** Phase Privacy v2 2026-05-23: nick này đang là internal contact của user nào (thường = owner). null nếu chưa ai pick. */
+  isInternalContactFor: { id: string; fullName: string | null } | null;
+  /** True nếu user hiện tại có quyền edit/delete nick (owner-of-nick HOẶC org admin) */
+  canManage: boolean;
+  /** True nếu user hiện tại là owner của nick (chính chủ) */
+  isOwnedByMe: boolean;
+  /** Privacy mode của nick — 'main' = bật riêng tư, 'sub' = công khai */
+  privacyMode?: 'main' | 'sub';
   crew: CrewMember[];
   crewCount: number;
   msgToday: number;
+  metricsToday: NickMetricsToday | null;
   quota: number;
   uptime7d: number;
   lastActivityAt: string | null;
@@ -42,9 +55,28 @@ export interface TeamStats {
   idle: number;
   error: number;
   msgToday: number;
+  // Phase metrics layer 2026-05-22 — breakdown org-wide today
+  msgSentByBot: number;
+  phoneSearchTotal: number;
+  friendReqSent: number;
   quota: number;
   uptimeTeam: number;
   needReloginIds: string[];
+}
+
+// Phase metrics layer 2026-05-22 — per-nick breakdown today (10 fields).
+// BE đã trả trong /enriched response.
+export interface NickMetricsToday {
+  msgReceivedFromFriends: number;
+  msgReceivedFromStrangers: number;
+  msgSentByUser: number;
+  msgSentByBot: number;
+  friendReqSent: number;
+  friendReqAccepted: number;
+  friendReqRejected: number;
+  phoneSearchTotal: number;
+  phoneSearchFoundZalo: number;
+  phoneSearchNoZalo: number;
 }
 
 export interface UptimeBucket {

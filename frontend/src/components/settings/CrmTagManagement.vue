@@ -86,21 +86,38 @@
           />
         </div>
 
-        <!-- Preview pill -->
+        <!-- Preview pill — Zalo tag dùng brand icon + clean name (strip 🔵 prefix);
+             CRM tag giữ emoji + name. Match visual TagCrmBar/ActivityItem. -->
         <div class="preview-cell">
-          <span class="tag-preview" :style="`background:${tag.color}22;color:${tag.color};border-color:${tag.color}`">
-            <span v-if="tag.emoji">{{ tag.emoji }} </span>{{ tag.name }}
+          <span
+            class="tag-preview"
+            :class="{ 'tag-preview-zalo': isZaloTag(tag) }"
+            :style="previewStyle(tag)"
+          >
+            <ZaloBrandIcon v-if="isZaloTag(tag)" :size="13" />
+            <span v-else-if="tag.emoji">{{ tag.emoji }} </span>{{ displayName(tag) }}
           </span>
         </div>
 
         <!-- Name + color edit inline -->
         <div class="name-cell">
-          <input type="color" :value="tag.color" class="color-picker" title="Đổi màu"
-            @change="patchTag(tag, { color: ($event.target as HTMLInputElement).value })" />
-          <input type="text" :value="tag.emoji || ''" class="emoji-input" maxlength="4" placeholder="🏷"
-            @blur="patchTag(tag, { emoji: ($event.target as HTMLInputElement).value || null })" />
-          <input type="text" :value="tag.name" class="name-input"
-            @blur="onRename(tag, ($event.target as HTMLInputElement).value)" />
+          <!-- Zalo tag: read-only (sync 1-chiều từ Zalo SDK, backend reject edit).
+               Hiện brand icon + clean name (strip 🔵 prefix) + 🔒 lock indicator. -->
+          <template v-if="isZaloTag(tag)">
+            <span class="zalo-locked" title="Tag Zalo Real — chỉ đổi/gỡ trên app Zalo, hệ thống tự sync về CRM">
+              <ZaloBrandIcon :size="14" />
+              <span class="zalo-locked-name">{{ displayName(tag) }}</span>
+              <span class="lock-icon" aria-hidden="true">🔒</span>
+            </span>
+          </template>
+          <template v-else>
+            <input type="color" :value="tag.color" class="color-picker" title="Đổi màu"
+              @change="patchTag(tag, { color: ($event.target as HTMLInputElement).value })" />
+            <input type="text" :value="tag.emoji || ''" class="emoji-input" maxlength="4" placeholder="🏷"
+              @blur="patchTag(tag, { emoji: ($event.target as HTMLInputElement).value || null })" />
+            <input type="text" :value="tag.name" class="name-input"
+              @blur="onRename(tag, ($event.target as HTMLInputElement).value)" />
+          </template>
         </div>
 
         <!-- Category -->
@@ -225,6 +242,27 @@
 import { ref, computed, onMounted } from 'vue';
 import { api } from '@/api/index';
 import { useToast } from '@/composables/use-toast';
+import ZaloBrandIcon from '@/components/icons/ZaloBrandIcon.vue';
+
+/** Tag là Zalo-managed (synced từ Zalo SDK). Detect qua managedBy='zalo_sync'
+ *  hoặc legacy prefix '🔵 ' nếu DB chưa migrate managedBy column. */
+function isZaloTag(tag: { name: string; managedBy?: string | null }): boolean {
+  return tag.managedBy === 'zalo_sync' || tag.name.startsWith('🔵 ');
+}
+
+/** Strip '🔵 ' prefix khỏi name khi display (DB vẫn store nguyên). */
+function displayName(tag: { name: string }): string {
+  return tag.name.startsWith('🔵 ') ? tag.name.slice(3) : tag.name;
+}
+
+/** Preview pill style — Zalo tag dùng brand blue tonal, CRM tag dùng tag.color tinted. */
+function previewStyle(tag: CrmTag): string {
+  if (isZaloTag(tag)) {
+    const c = '#0068FF';
+    return `background:${c}1f;color:${c};border-color:${c}99`;
+  }
+  return `background:${tag.color}22;color:${tag.color};border-color:${tag.color}`;
+}
 
 interface CrmTag {
   id: string;
@@ -236,6 +274,8 @@ interface CrmTag {
   order: number;
   isActive: boolean;
   usageCount: number;
+  /** 'zalo_sync' = synced từ Zalo SDK (read-only). null = CRM user-created. */
+  managedBy?: string | null;
 }
 
 const toast = useToast();
@@ -646,7 +686,47 @@ onMounted(() => { void fetchTags(); });
   font-size: 12.5px;
   font-weight: 600;
   border: 1.5px solid;
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+/* Zalo locked name cell — read-only display thay input (Zalo sync 1-chiều) */
+.zalo-locked {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: color-mix(in srgb, #0068FF 6%, white);
+  border: 1px dashed color-mix(in srgb, #0068FF 40%, white);
+  border-radius: 6px;
+  color: color-mix(in srgb, #0068FF 80%, black);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: help;
+}
+.zalo-locked-name { font-weight: 600; }
+.lock-icon { font-size: 11px; opacity: 0.6; }
+
+/* Zalo tag preview — match TagCrmBar.tag-pill.tag-zalo: brand icon + "Zalo" badge.
+ * Cần position:relative cho ::before. margin-right chừa cho badge nhô góc phải. */
+.tag-preview-zalo {
+  position: relative;
+  margin-right: 6px;
+}
+.tag-preview-zalo::before {
+  content: 'Zalo';
+  position: absolute;
+  top: -7px;
+  right: -4px;
+  background: #0068FF;
+  color: white;
+  font-size: 7.5px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  padding: 1px 5px;
+  border-radius: 99px;
+  line-height: 1;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
 /* Name cell */

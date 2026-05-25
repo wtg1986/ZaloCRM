@@ -76,7 +76,11 @@ import { formatInOrgTz, getOrgParts } from '@/composables/use-org-timezone';
 import { CATEGORY_META, ACTION_META, categoryOf, type ActivityCategory } from '@/constants/activity-types';
 import { CARE_STATUSES } from '@/constants/care-status';
 import { getAutoTagDef } from '@/constants/auto-tags';
+import { loadTagDefs, findTagDef, isZaloManaged, cleanTagName, tagColor as lookupTagColor } from '@/composables/use-crm-tag-defs';
 import MentionPopover from './MentionPopover.vue';
+
+// Ensure CrmTag defs loaded — module-level cache, only fetches once.
+void loadTagDefs();
 
 /* Care status meta map: code → { label VN, color hex từ chip class } */
 const CHIP_TO_HEX: Record<string, string> = {
@@ -95,6 +99,22 @@ function statusMeta(code: string): { label: string; color: string } | null {
 }
 function escape(s: string): string {
   return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] || c));
+}
+
+/* Render tag chip HTML — match TagCrmBar.tag-pill style (Zalo monochromatic / CRM tinted).
+ * forceZalo=true cho action tag_add_zalo/tag_remove_zalo (action type cho biết là Zalo)
+ * khi tag name có thể chưa có 🔵 prefix mà CrmTag def cũng không tìm thấy. */
+function tagChipHtml(rawName: string, forceZalo = false): string {
+  const zaloManaged = forceZalo || isZaloManaged(rawName)
+    || findTagDef(`🔵 ${rawName}`)?.managedBy === 'zalo_sync'; // CrmTag stored with prefix
+  const cleaned = cleanTagName(rawName);
+  const def = findTagDef(cleaned) || findTagDef(rawName) || findTagDef(`🔵 ${cleaned}`);
+  const color = def?.color || (zaloManaged ? '#0068FF' : lookupTagColor(rawName));
+  const emoji = !zaloManaged && def?.emoji ? `${def.emoji} ` : '';
+  // Zalo tags hiện logo Zalo thật (SVG) thay vì chấm tròn — match brand identity.
+  const leading = zaloManaged ? '<img src="/brand/zalo-icon.svg" alt="Zalo" class="zalo-icon-inline"/>' : '';
+  const cls = zaloManaged ? 'inline-tag tag-zalo' : 'inline-tag tag-crm';
+  return `<span class="${cls}" style="--tag-color:${color}">${leading}${escape(emoji)}${escape(cleaned)}</span>`;
 }
 /* Render 1 status pill HTML — label VN + bg-color theo chip */
 function statusPillHtml(code: string | null | undefined): string {
@@ -163,13 +183,20 @@ const detailsLine = computed(() => {
     const color = delta > 0 ? 'green' : 'red';
     return `: <span class="diff-${color}">${sign}${delta}</span> (${d.old} → ${d.new})`;
   }
-  // Tag add/remove
-  if ((action === 'tag_add_crm' || action === 'tag_remove_crm' || action === 'tag_add_zalo' || action === 'tag_remove_zalo') && d.tag) {
-    return `: <em>${escape(String(d.tag))}</em>`;
+  // Tag add/remove — render chip màu giống TagCrmBar (zalo monochromatic / crm tinted).
+  // detailsLine dùng v-html nên embed HTML chip trực tiếp với inline style.
+  // forceZalo cho action *_zalo (action type là source of truth — không phụ thuộc tag name prefix).
+  if ((action === 'tag_add_crm' || action === 'tag_remove_crm') && d.tag) {
+    return `: ${tagChipHtml(String(d.tag), false)}`;
   }
-  // Tag change (gộp remove+add cùng sync): A → B
+  if ((action === 'tag_add_zalo' || action === 'tag_remove_zalo') && d.tag) {
+    return `: ${tagChipHtml(String(d.tag), true)}`;
+  }
+  // Tag change (gộp remove+add cùng sync): A → B — luôn forceZalo
   if (action === 'tag_change_zalo' && (d.from || d.to)) {
-    return `: <em>${escape(String(d.from || '—'))}</em> → <em>${escape(String(d.to || '—'))}</em>`;
+    const from = d.from ? tagChipHtml(String(d.from), true) : '<span class="diff-val null">—</span>';
+    const to = d.to ? tagChipHtml(String(d.to), true) : '<span class="diff-val null">—</span>';
+    return `: ${from} → ${to}`;
   }
   // Appointment: show date
   if (action === 'appointment_create' && d.appointmentDate) {
@@ -387,23 +414,76 @@ const autoTagContext = computed<string>(() => {
   font-size: 11px;
 }
 
+/* Inline tag chip — match TagCrmBar nhưng size nhỏ hơn cho activity context.
+ * Sync màu/style với TagCrmBar.tag-pill (tag-zalo monochromatic, tag-crm tinted). */
+.act-details :deep(.inline-tag) {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  font-size: 10.5px;
+  font-weight: 500;
+  border: 1px solid;
+  white-space: nowrap;
+  margin: 0 1px;
+  line-height: 1.5;
+}
+.act-details :deep(.inline-tag.tag-zalo) {
+  --tag-color: #0068FF;
+  background: color-mix(in srgb, var(--tag-color) 12%, white);
+  border-color: color-mix(in srgb, var(--tag-color) 80%, white);
+  color: color-mix(in srgb, var(--tag-color) 75%, black);
+  position: relative;
+  margin-right: 6px; /* chừa cho Zalo badge nhô ra phải */
+}
+.act-details :deep(.inline-tag.tag-zalo .zalo-icon-inline) {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  display: inline-block;
+  vertical-align: -2px; /* visual baseline align với text */
+}
+/* "Zalo" badge nhỏ hơn để fit context inline activity timeline */
+.act-details :deep(.inline-tag.tag-zalo::before) {
+  content: 'Zalo';
+  position: absolute;
+  top: -5px;
+  right: -3px;
+  background: #0068FF;
+  color: white;
+  font-size: 6.5px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  padding: 0 3px;
+  border-radius: 99px;
+  line-height: 1.3;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+.act-details :deep(.inline-tag.tag-crm) {
+  --tag-color: #546E7A;
+  background: color-mix(in srgb, var(--tag-color) 8%, white);
+  border-color: color-mix(in srgb, var(--tag-color) 70%, white);
+  color: color-mix(in srgb, var(--tag-color) 80%, black);
+}
+
 /* Auto-tag diff block — chip giống TagCrmBar.tag-auto (tonal + AUTO badge) */
 .autotag-diff {
   margin-top: 4px;
   background: var(--smax-grey-50, #fafbfc);
   border-left: 2px solid var(--smax-grey-200);
-  padding: 5px 8px;
+  padding: 7px 8px 4px; /* top hơi lớn để chừa AUTO badge nhô lên */
   border-radius: 0 4px 4px 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 5px;
 }
 .autotag-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 6px;
   align-items: center;
-  font-size: 11.5px;
+  font-size: 11px;
 }
 .autotag-arrow {
   font-weight: 600;
@@ -413,14 +493,15 @@ const autoTagContext = computed<string>(() => {
 }
 .autotag-arrow.added { color: #059669; }
 .autotag-arrow.removed { color: #b91c1c; }
+/* Auto-tag chip nhỏ gọn để fit context activity timeline (không cần bằng TagCrmBar) */
 .autotag-chip {
   --tag-color: #6B7280;
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  padding: 2px 8px 2px 7px;
-  border-radius: 11px;
-  font-size: 11px;
+  padding: 1px 7px 1px 6px;
+  border-radius: 10px;
+  font-size: 10.5px;
   font-weight: 600;
   border: 1px solid;
   background: color-mix(in srgb, var(--tag-color) 10%, white);
@@ -429,21 +510,22 @@ const autoTagContext = computed<string>(() => {
   cursor: help;
   position: relative;
   white-space: nowrap;
+  line-height: 1.4;
 }
-.autotag-chip .autotag-emoji { font-size: 12px; }
+.autotag-chip .autotag-emoji { font-size: 11px; }
 .autotag-chip::before {
   content: 'AUTO';
   position: absolute;
-  top: -6px;
+  top: -5px;
   right: -3px;
   background: var(--tag-color);
   color: white;
-  font-size: 7px;
+  font-size: 6.5px;
   font-weight: 800;
-  letter-spacing: 0.05em;
-  padding: 1px 3px;
+  letter-spacing: 0.04em;
+  padding: 0 3px;
   border-radius: 99px;
-  line-height: 1;
+  line-height: 1.3;
 }
 /* Removed chip: dim + strikethrough để rõ "tag bị gỡ" */
 .autotag-chip.removed {

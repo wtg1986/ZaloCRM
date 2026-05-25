@@ -12,24 +12,35 @@
     />
 
     <div class="bubble-wrapper">
-      <!-- Tên người gửi: hiện cho group + non-self, click → mở Zalo user info -->
-      <div
-        v-if="isGroup && !isSelf"
-        class="sender-name sender-name-clickable"
-        @click="emit('sender-click')"
-      >
-        {{ message.senderName || 'Unknown' }}
-      </div>
-
+      <!-- bubble-anchor: positioning parent CHỈ cho bubble + reaction. Tách khỏi
+           wrapper để reaction-display absolute bottom: tính từ BUBBLE BOTTOM, không
+           phải wrapper bottom (wrapper kéo dài khi có receipt chip phía dưới). -->
+      <div class="bubble-anchor">
       <!-- Bubble -->
       <div
         class="message-bubble"
         :class="{ 'is-self': isSelf, 'is-other': !isSelf }"
         @contextmenu.prevent="emit('contextmenu', $event)"
       >
-        <!-- Deleted -->
-        <div v-if="message.isDeleted" class="text-decoration-line-through font-italic" style="opacity: 0.6;">
-          {{ message.content || '(tin nhắn)' }}<span class="text-caption"> (đã thu hồi)</span>
+        <!-- Tên người gửi: hiện cho group + non-self, click → mở Zalo user info.
+             Phase A UI fix (2026-05-21): chuyển vào TRONG bubble (trên đầu nội dung)
+             theo style Zalo native. Trước fix nằm ngoài bubble. -->
+        <div
+          v-if="isGroup && !isSelf"
+          class="sender-name sender-name-clickable"
+          @click="emit('sender-click')"
+        >
+          {{ message.senderName || 'Unknown' }}
+        </div>
+
+        <!-- E04 Tin thu hồi — anh chốt 2026-05-21: icon 🔂 + italic xám + gạch ngang.
+             Nội dung gốc giữ lại (gạch ngang) để sale biết KH/sale đã thu hồi cái gì. -->
+        <div v-if="message.isDeleted" class="recall-card">
+          <div class="recall-header">
+            <span class="recall-icon">🔂</span>
+            <span class="recall-label">Tin nhắn đã thu hồi</span>
+          </div>
+          <div v-if="message.content" class="recall-body">{{ message.content }}</div>
         </div>
 
         <template v-else>
@@ -144,12 +155,19 @@
             <div v-if="formattedCaption" class="media-caption" v-html="formattedCaption" />
           </div>
 
-          <!-- Voice -->
-          <div v-else-if="message.contentType === 'voice'">
-            <div class="voice-msg">
-              <v-icon size="18">mdi-microphone</v-icon>
-              <span class="ml-1">Tin nhắn thoại</span>
-              <a v-if="voiceUrl" :href="voiceUrl" target="_blank" class="ml-2 voice-link">▶ Nghe</a>
+          <!-- E10/E11 Voice / Audio — anh chốt 2026-05-21: inline player có waveform-decor +
+               controls native, KHÔNG mở external link. Browser tự handle play/pause/seek/duration. -->
+          <div v-else-if="message.contentType === 'voice' || message.contentType === 'audio'">
+            <div class="voice-msg-v2">
+              <v-icon size="16" class="voice-mic-icon">mdi-microphone</v-icon>
+              <audio
+                v-if="voiceUrl"
+                :src="voiceUrl"
+                controls
+                preload="metadata"
+                class="voice-audio"
+              />
+              <span v-else class="voice-fallback">🎤 Tin thoại (không tải được)</span>
             </div>
             <div v-if="formattedCaption" class="media-caption" v-html="formattedCaption" />
           </div>
@@ -168,13 +186,17 @@
             v-else-if="isCallMessage"
             type="call"
             :content="callContent"
+            @callback="$emit('callback', message)"
           />
 
-          <!-- Special types -->
+          <!-- Special types — anh chốt 2026-05-21: phân biệt contact_card variants:
+               action='show.profile' → danh thiếp profile; action='recommened.user' → gợi ý bạn bè -->
           <SpecialMessageRenderer
             v-else-if="isSpecialType(message.contentType)"
-            :type="message.contentType"
+            :type="resolveSpecialType(message)"
             :content="parseContent(message.content)"
+            @callback="$emit('callback', message)"
+            @open-profile="onOpenProfile"
           />
 
           <!-- Default text — parse @mention + bullets + linebreaks -->
@@ -185,16 +207,53 @@
         <!-- Timestamp -->
         <div class="bubble-time" :class="{ 'text-end': isSelf }">
           {{ formatTime(message.sentAt) }}
+          <!-- Bug 3 fix: badge "(đã sửa)" + tooltip hover xem nội dung gốc.
+               Edit không sync Zalo — KH ở Zalo vẫn thấy bản cũ. Tooltip giúp sale tự verify. -->
+          <span
+            v-if="message.editedAt"
+            class="edited-badge"
+            :title="message.originalContent ? `Trước khi sửa: ${message.originalContent}` : 'Đã chỉnh sửa'"
+          >· đã sửa</span>
         </div>
       </div>
 
-      <!-- Reaction display -->
+      <!-- Reaction display — Anh chốt 2026-05-22 Zalo native:
+           1 box duy nhất chứa icons + tổng count. self → align RIGHT, other → align LEFT.
+           Bên trong bubble-anchor để absolute bottom: tính từ bubble bottom, không phải
+           wrapper bottom (wrapper kéo dài khi có receipt-chip-row phía dưới). -->
       <reaction-display
         v-if="reactions && reactions.length > 0"
         :reactions="reactions"
-        :class="isSelf ? 'justify-end' : 'justify-start'"
+        class="bubble-reaction-overlap"
+        :class="{ 'reaction-align-right': isSelf, 'reaction-align-left': !isSelf }"
         @toggle="(emoji) => emit('toggle-reaction', emoji)"
+        @open-detail="emit('open-reaction-detail', { reactions, message })"
       />
+      </div><!-- /bubble-anchor -->
+
+      <!-- Wave 1+2 (2026-05-22 anh chốt Zalo native UX): receipt chip CHỈ hiện
+           cho tin OUTGOING CUỐI CÙNG. Render SAU reaction-display để chip nằm
+           DƯỚI reaction (anh feedback: reaction che chữ "Đã xem"). Tin sent < 3s → ẩn. -->
+      <div
+        v-if="isSelf && isLastSelf && receiptState !== 'sent'"
+        class="receipt-chip-row"
+        :class="{ 'has-reaction-above': reactions && reactions.length > 0 }"
+      >
+        <span class="receipt-chip" :class="receiptState" :title="receiptTooltip">
+          <svg v-if="receiptState === 'sending'" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9" />
+            <polyline points="12 7 12 12 15 14" />
+          </svg>
+          <svg v-else-if="receiptState === 'delivered'" width="13" height="9" viewBox="0 0 18 12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="2 6 7 11 16 1" />
+          </svg>
+          <svg v-else width="16" height="9" viewBox="0 0 22 12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="2 6 7 11 16 1" />
+            <polyline points="8 6 13 11 21 2" />
+          </svg>
+          <span class="receipt-label">{{ receiptLabel }}</span>
+        </span>
+      </div>
 
       <!-- Hover reaction picker — bubble hover → trigger button visible →
            hover trigger → emoji picker mở (open-on-hover trong reaction-picker) -->
@@ -224,13 +283,20 @@ const props = defineProps<{
    *  Cho user thread: dùng conversation.contact.avatarUrl.
    *  Cho group: chờ backend expose per-sender avatar; tạm null fallback initials. */
   senderAvatarUrl?: string | null;
+  /** Tin OUTGOING cuối cùng — chỉ tin này hiện receipt chip (Zalo native UX,
+   *  chốt 2026-05-22). Tin cuối seen ⇒ ngầm hiểu mọi tin trên cũng seen. */
+  isLastSelf?: boolean;
 }>();
 
 const emit = defineEmits<{
   contextmenu: [event: MouseEvent];
   'preview-image': [url: string];
+  'preview-video': [url: string];
   'toggle-reaction': [emoji: string];
   'sender-click': [];
+  callback: [message: Message];
+  'open-profile': [uid: string];
+  'open-reaction-detail': [payload: { reactions: any[]; message: Message }];
 }>();
 
 const SPECIAL_TYPES = new Set([
@@ -244,6 +310,31 @@ function isSpecialType(contentType: string | null | undefined): boolean {
 function parseContent(content: string | null): unknown {
   if (!content) return null;
   try { return JSON.parse(content); } catch { return content; }
+}
+
+/**
+ * P5 2026-05-21: contact_card polymorphic theo action. Map sang type cụ thể để
+ * special-message-renderer render UI khác nhau:
+ *   show.profile      → 'contact_card_profile' (danh thiếp thật, avatar + name + phone + Mở chat)
+ *   recommened.user   → 'user_suggest'         (gợi ý kết bạn — chip Gợi ý + Xem thông tin)
+ *   recommened.link   → 'link'                 (share link có preview)
+ *   khác (incl recall)→ giữ nguyên contentType (rich fallback)
+ */
+function resolveSpecialType(msg: Message): string {
+  if (msg.contentType !== 'contact_card') return msg.contentType;
+  try {
+    const p = safeParse(msg.content);
+    const action = String(p?.action || '').toLowerCase();
+    if (action === 'show.profile') return 'contact_card_profile';
+    if (action === 'recommened.user' || action === 'recommended.user') return 'user_suggest';
+    if (action === 'recommened.link' || action === 'recommended.link') return 'link';
+  } catch { /* fallthrough */ }
+  return 'contact_card';
+}
+
+// E21/E22 — mở Zalo user info dialog cho UID trong card. Parent (MessageThread) handle.
+function onOpenProfile(uid: string) {
+  emit('open-profile', uid);
 }
 
 function getImageUrl(msg: Message): string | null {
@@ -352,6 +443,41 @@ const formattedText = computed(() => {
 });
 
 /**
+ * Wave 1+2 (2026-05-21) — Read-receipt state cho tin OUTGOING (isSelf=true).
+ *   seen      — KH đã mở conversation đọc tin (2 tick xanh primary)
+ *   delivered — Zalo confirm device KH nhận packet, chưa đọc (1 tick xám)
+ *   sending   — chưa có deliveredAt VÀ tin > 3s tuổi (clock outline)
+ *   sent      — < 3s (vừa gửi, chưa có confirm) — hiện không icon (giảm noise)
+ */
+const receiptState = computed<'sending' | 'delivered' | 'seen' | 'sent'>(() => {
+  const m = props.message;
+  if (m.seenAt) return 'seen';
+  if (m.deliveredAt) return 'delivered';
+  const ageMs = Date.now() - new Date(m.sentAt).getTime();
+  return ageMs > 3000 ? 'sending' : 'sent';
+});
+
+const receiptTooltip = computed<string>(() => {
+  const m = props.message;
+  switch (receiptState.value) {
+    case 'seen':      return `KH đã xem${m.seenAt ? ' lúc ' + formatTime(m.seenAt) : ''}`;
+    case 'delivered': return `Đã gửi tới KH${m.deliveredAt ? ' lúc ' + formatTime(m.deliveredAt) : ''}`;
+    case 'sending':   return 'Đang gửi...';
+    default:          return '';
+  }
+});
+
+const receiptLabel = computed<string>(() => {
+  const m = props.message;
+  switch (receiptState.value) {
+    case 'seen':      return m.seenAt ? `Đã xem ${formatTime(m.seenAt)}` : 'Đã xem';
+    case 'delivered': return 'Đã nhận';
+    case 'sending':   return 'Đang gửi';
+    default:          return '';
+  }
+});
+
+/**
  * Caption text khi message vừa có media (image/video/sticker/gif/file) vừa có text.
  * Zalo gửi message kèm caption thường lưu trong content.title hoặc content.description.
  * Đặc biệt: bỏ qua nếu title trông giống URL/filename/path (vd ".jpg", "/photos/...").
@@ -429,7 +555,9 @@ const videoThumb = computed(() => {
   const p = safeParse(props.message.content);
   if (!p) return null;
   const thumb = (p.thumbUrl as string) || (p.thumb as string) || (p.thumbnail as string);
-  return typeof thumb === 'string' && thumb.startsWith('http') ? thumb : null;
+  if (typeof thumb !== 'string' || !thumb.startsWith('http')) return null;
+  if (/\.(mp4|mov|webm|mkv)(\?|#|$)/i.test(thumb)) return null;
+  return thumb;
 });
 const videoTitle = computed(() => {
   const p = safeParse(props.message.content);
@@ -461,11 +589,13 @@ function extractMediaUrl(_kind: string, content: string | null): string | null {
   return typeof url === 'string' && url.startsWith('http') ? url : null;
 }
 
+// E08 — anh chốt 2026-05-21: video play TRONG popup modal, KHÔNG mở tab mới.
+// Emit 'preview-video' với URL — parent (MessageThread) mở modal `<video controls autoplay>`.
 function openVideo() {
   const p = safeParse(props.message.content);
   const url = (p?.href as string) || (p?.hdUrl as string) || (p?.normalUrl as string);
   if (typeof url === 'string' && url.startsWith('http')) {
-    window.open(url, '_blank');
+    emit('preview-video', url);
   }
 }
 
@@ -573,9 +703,13 @@ function openFile(href: string) {
 </script>
 
 <style scoped>
+/* Phase A UI fix (2026-05-21):
+   - align-items: flex-start → avatar luôn nằm TOP-LEFT của bubble (cả user msg + group msg)
+   - Bỏ msg-avatar margin-bottom hack (cũ: align với bottom + offset sender name)
+   - Có margin-bottom 18px ở bubble-wrapper để chừa chỗ cho reaction overlap (50% trong/ngoài) */
 .msg-row {
   display: flex;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 7px;
   margin-bottom: 5px;
 }
@@ -584,20 +718,29 @@ function openFile(href: string) {
 }
 .msg-avatar {
   flex-shrink: 0;
-  margin-bottom: 16px;  /* align với bubble (offset bởi sender name + time) */
 }
 .msg-avatar-clickable { cursor: pointer; transition: transform 0.1s ease; }
 .msg-avatar-clickable:hover { transform: scale(1.06); }
 .bubble-wrapper {
   max-width: 65%;
   position: relative;
+  /* Chừa chỗ cho reaction-display overlap (12px = 50% chiều cao chip 24px) */
+  margin-bottom: 12px;
 }
+/* bubble-anchor: positioning context cho reaction-display absolute.
+   Wrap bubble + reaction để bottom: tính từ BUBBLE bottom, không phải wrapper
+   bottom (wrapper extend khi có receipt-chip-row dưới). */
+.bubble-anchor {
+  position: relative;
+  display: block;
+}
+/* Sender name giờ nằm TRONG bubble — style như header thay vì label ngoài. */
 .sender-name {
   font-size: 11.5px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--smax-primary, #2962ff);
-  margin-bottom: 3px;
-  padding: 0 4px;
+  margin-bottom: 4px;
+  line-height: 1.2;
 }
 .sender-name-clickable { cursor: pointer; }
 .sender-name-clickable:hover { text-decoration: underline; }
@@ -631,6 +774,58 @@ function openFile(href: string) {
   padding: 0 2px;
 }
 .bubble-time.text-end { text-align: right; }
+/* Badge "đã sửa" — italic xám nhạt, hover xem nội dung gốc qua title attr */
+.edited-badge {
+  font-style: italic;
+  color: var(--smax-grey-500, #9ca3af);
+  margin-left: 2px;
+  cursor: help;
+}
+
+/* Read-receipt chip (Wave 1+2, anh chốt 2026-05-22 Zalo native UX):
+   Chip nhỏ NẰM DƯỚI bubble cuối cùng outgoing — không chèn timestamp.
+   Right-aligned, pill bo tròn, icon + text label.
+   Color tier modern soft: sending xám nhạt / delivered xám trung / seen xanh.
+   .has-reaction-above: reaction-display absolute overlap → chip cần margin lớn
+   để clear reaction height (~24px) thay vì 4px như default. */
+.receipt-chip-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+  padding: 0 2px;
+}
+.receipt-chip-row.has-reaction-above {
+  margin-top: 24px;
+}
+.receipt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.1px;
+  cursor: help;
+  user-select: none;
+  background: rgba(120, 130, 145, 0.10);
+  color: rgba(75, 85, 105, 0.85);
+  transition: background 0.18s ease, color 0.18s ease;
+}
+.receipt-chip.sending {
+  background: rgba(120, 130, 145, 0.08);
+  color: rgba(100, 110, 125, 0.7);
+}
+.receipt-chip.delivered {
+  background: rgba(120, 130, 145, 0.10);
+  color: rgba(75, 85, 105, 0.85);
+}
+.receipt-chip.seen {
+  background: rgba(37, 99, 235, 0.10);
+  color: #2563eb;
+}
+.receipt-chip svg { display: block; flex-shrink: 0; }
+.receipt-label { line-height: 1.2; }
 
 .reminder-card {
   padding: 8px 12px;
@@ -794,6 +989,43 @@ function openFile(href: string) {
 }
 .voice-link:hover { text-decoration: underline; }
 
+.voice-msg-v2 {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 10px;
+  background: var(--smax-grey-100, #f5f6fa);
+  border-radius: 9px;
+  max-width: 280px;
+}
+.voice-mic-icon { color: var(--smax-primary, #2962ff); flex-shrink: 0; }
+.voice-audio { height: 32px; flex: 1; min-width: 0; }
+.voice-fallback { font-size: 12px; color: var(--smax-grey-700); font-style: italic; }
+
+.recall-card {
+  display: inline-block;
+  padding: 6px 10px;
+  background: rgba(107, 114, 128, 0.06);
+  border-radius: 7px;
+  border-left: 2px solid var(--smax-grey-500, #9e9e9e);
+  opacity: 0.85;
+  max-width: 100%;
+}
+.recall-header {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 11.5px;
+  color: var(--smax-grey-700, #5a6478);
+  font-weight: 600;
+}
+.recall-icon { font-size: 14px; }
+.recall-label { font-style: normal; }
+.recall-body {
+  text-decoration: line-through;
+  color: var(--smax-grey-700, #5a6478);
+  font-size: 13px;
+  font-style: italic;
+  margin-top: 2px;
+  word-break: break-word;
+}
+
 .bubble-wrapper .reaction-trigger {
   position: absolute;
   top: 50%;
@@ -809,5 +1041,32 @@ function openFile(href: string) {
 }
 .reaction-trigger--right {
   right: -28px;
+}
+
+/* Phase A UI fix v4 (2026-05-22) — Zalo native reaction box.
+   Anh chốt: 1 box duy nhất chứa icons sát nhau + tổng count cuối.
+   self → align RIGHT bubble, other → align LEFT bubble.
+   Overlap ~6px dưới mép bubble (anh feedback 2026-05-22: cho sát box hơn).
+   Click box → MessageThread mở popup detail. */
+.bubble-anchor > .bubble-reaction-overlap {
+  position: absolute;
+  bottom: -10px;
+  margin: 0;
+  z-index: 2;
+  /* FIX 2026-05-22: BỎ max-width — bubble nhỏ (vd tin "1") + 4 icons + total
+     "4" sẽ bị clip mất số count. Để box grow theo content, anchor right/left
+     edge tại bubble → grows về phía trong message area, vẫn fit trong
+     .messages overflow-x:hidden (chỉ extreme far ngoài thread mới bị cắt). */
+  width: max-content;
+}
+/* Tin self (gửi đi, bubble bên phải): anchor phải bubble, content grows leftward */
+.bubble-anchor > .bubble-reaction-overlap.reaction-align-right {
+  right: 8px;
+  left: auto;
+}
+/* Tin received (gửi đến, bubble bên trái): anchor trái bubble, content grows rightward */
+.bubble-anchor > .bubble-reaction-overlap.reaction-align-left {
+  left: 8px;
+  right: auto;
 }
 </style>

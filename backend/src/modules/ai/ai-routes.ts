@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { authMiddleware } from '../auth/auth-middleware.js';
 import { requireRole } from '../auth/role-middleware.js';
 import { requireZaloAccess } from '../zalo/zalo-access-middleware.js';
-import { getAiConfig, getAiUsage, updateAiConfig, generateAiOutput } from './ai-service.js';
+import { getAiConfig, getAiUsage, updateAiConfig, generateAiOutput, aiFormatRichText } from './ai-service.js';
 import { getAvailableProviders } from './provider-registry.js';
 import { logger } from '../../shared/utils/logger.js';
 import { prisma } from '../../shared/database/prisma-client.js';
@@ -110,6 +110,21 @@ export async function aiRoutes(app: FastifyInstance) {
     } catch (err) {
       logger.error('[ai] Sentiment error:', err);
       return sendHandledError(reply, err, 'Failed to analyze sentiment');
+    }
+  });
+
+  // ── POST /ai/format-rich ─ AI auto-format text → Zalo styles. 2026-05-21 ─
+  // Body: { text: string }  → Response: { text, styles[], source: 'ai'|'fallback' }
+  // source='fallback' khi AI tắt, hết quota, hoặc parse fail — FE gửi tin plain.
+  app.post('/api/v1/ai/format-rich', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const body = request.body as { text?: string };
+      if (!body?.text?.trim()) return reply.status(400).send({ error: 'text is required' });
+      if (body.text.length > 3000) return reply.status(400).send({ error: 'Đoạn text quá dài (tối đa 3000 ký tự)' });
+      return await aiFormatRichText({ orgId: request.user!.orgId, rawText: body.text });
+    } catch (err) {
+      logger.error('[ai] Format-rich error:', err);
+      return sendHandledError(reply, err, 'Không format được tin bằng AI');
     }
   });
 }
