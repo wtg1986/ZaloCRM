@@ -14,9 +14,11 @@ import { logger } from '../../shared/utils/logger.js';
 import { handleIncomingMessage } from '../chat/message-handler.js';
 import { detectContentType, extractAlbumInfo } from './zalo-message-helpers.js';
 
-const MAX_GROUPS = 50;
-const MESSAGES_PER_GROUP = 50;
-const DM_MAX_PAGES = 50;
+// Nâng giới hạn backfill để kéo nhiều lịch sử hơn (đổi 2026-06-10).
+// Lưu ý: tăng cao → sync lâu hơn + rủi ro rate-limit Zalo. Giữ mức vừa phải.
+const MAX_GROUPS = 200;
+const MESSAGES_PER_GROUP = 100;
+const DM_MAX_PAGES = 100;
 const DM_PAGE_TIMEOUT_MS = 15_000;
 
 /**

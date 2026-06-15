@@ -22,3 +22,6 @@ TODO.local.md
 /frontend/public/friends-v2.html
 /frontend/public/Giao Diện Tính Năng*.xlsx
 backend/static/
+
+# Dev local compose override (đổi cổng tránh đụng project khác)
+docker-compose.override.yml

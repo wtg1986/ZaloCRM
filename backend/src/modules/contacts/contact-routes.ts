@@ -6,6 +6,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { authMiddleware } from '../auth/auth-middleware.js';
+import { requireGrant } from '../rbac/rbac-middleware.js';
 import { logger } from '../../shared/utils/logger.js';
 import { mergeContacts } from './merge-service.js';
 import { runContactIntelligence } from './contact-intelligence.js';
@@ -44,7 +45,9 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         relationshipKindAny = '', // CSV: 'friend,pending_friend,...' — match KH có ≥1 Friend kind đó
         dateFrom = '',
         dateTo = '',
-      } = request.query as QueryParams;
+        unassigned = '',      // 'true' = chưa có người phụ trách
+        sort = '',            // recent|name|score|created|oldest (mặc định recent)
+      } = request.query as QueryParams & { unassigned?: string; sort?: string };
 
       const where: any = { orgId: user.orgId, mergedInto: null };
       // Model B: mỗi Contact tự nó là "KH Cha"; con = Friend rows. KHÔNG filter parentContactId.
@@ -108,8 +111,18 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
       const pageNum = parseInt(page);
       const limitNum = parseInt(limit);
 
-      // Sort: tương tác mới nhất lên đầu (theo design D2 trong office-hours doc).
-      // lastActivity null → cuối cùng. Indexed @@index([orgId, lastActivity]).
+      if (unassigned === 'true') where.assignedUserId = null;
+
+      // Sort động: recent (mặc định) | name | score | created | oldest.
+      const orderByMap: Record<string, any[]> = {
+        recent: [{ lastActivity: { sort: 'desc', nulls: 'last' } }, { updatedAt: 'desc' }],
+        name: [{ crmName: { sort: 'asc', nulls: 'last' } }, { fullName: 'asc' }],
+        score: [{ leadScore: { sort: 'desc', nulls: 'last' } }, { updatedAt: 'desc' }],
+        created: [{ createdAt: 'desc' }],
+        oldest: [{ createdAt: 'asc' }],
+      };
+      const orderBy = orderByMap[sort] ?? orderByMap.recent;
+
       const [contacts, total] = await Promise.all([
         prisma.contact.findMany({
           where,
@@ -118,10 +131,7 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
             _count: { select: { conversations: true, appointments: true } },
             ...AGGREGATE_INCLUDE,
           },
-          orderBy: [
-            { lastActivity: { sort: 'desc', nulls: 'last' } },
-            { updatedAt: 'desc' },
-          ],
+          orderBy,
           skip: (pageNum - 1) * limitNum,
           take: limitNum,
         }),
@@ -303,7 +313,7 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ── POST /api/v1/contacts — create new contact ────────────────────────────
-  app.post('/api/v1/contacts', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.post('/api/v1/contacts', { preHandler: requireGrant('contact', 'create') }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const user = request.user!;
       const body = request.body as Record<string, any>;
@@ -375,7 +385,7 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ── PUT /api/v1/contacts/:id — update CRM fields ─────────────────────────
-  app.put('/api/v1/contacts/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.put('/api/v1/contacts/:id', { preHandler: requireGrant('contact', 'edit') }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const user = request.user!;
       const { id } = request.params as { id: string };
@@ -408,6 +418,17 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
       };
       if (body.firstContactDate !== undefined) {
         updateData.firstContactDate = body.firstContactDate ? new Date(body.firstContactDate) : null;
+      }
+      // Pipeline stage động (Status table) — dùng cho Kanban. null = bỏ phân loại.
+      if (body.statusId !== undefined) {
+        if (body.statusId !== null) {
+          const s = await prisma.status.findFirst({
+            where: { id: body.statusId, orgId: user.orgId },
+            select: { id: true },
+          });
+          if (!s) return reply.status(400).send({ error: 'Invalid statusId' });
+        }
+        updateData.statusId = body.statusId;
       }
 
       const updated = await prisma.contact.update({
@@ -504,7 +525,7 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ── PUT /api/v1/contacts/:id/tags — update tags only ─────────────────────
-  app.put('/api/v1/contacts/:id/tags', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.put('/api/v1/contacts/:id/tags', { preHandler: requireGrant('contact', 'edit') }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const user = request.user!;
       const { id } = request.params as { id: string };

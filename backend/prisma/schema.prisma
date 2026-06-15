@@ -13,6 +13,8 @@ model Organization {
   // Múi giờ mặc định của tổ chức (offset cố định, không tự DST). Format "+07:00" / "-05:00".
   // Mặc định +07:00 (Việt Nam) để mọi timestamp render trong UI và log đều đồng nhất, dễ decode.
   timezone  String   @default("+07:00")
+  // Gói dịch vụ — quota nick/nhân viên/contact suy ra từ PLAN_LIMITS (code).
+  plan      String   @default("free")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

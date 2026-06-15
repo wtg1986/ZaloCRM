@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"^ [a-z].*:$\" docker-compose.yml)",
+      "Bash(cat /tmp/zalocrm_secrets.env)",
+      "Read(//private/tmp/**)",
+      "Bash(docker compose *)",
+      "Bash(lsof -nP -iTCP:5433 -sTCP:LISTEN)",
+      "Bash(lsof -nP -iTCP:5432 -sTCP:LISTEN)",
+      "Bash(npm install *)",
+      "Bash(npx prisma *)",
+      "Bash(npx tsx *)",
+      "Bash(curl -s http://localhost:3000/health)",
+      "Bash(curl -s http://localhost:3000/api/v1/status)",
+      "Bash(grep -nA8 \"proxy\\\\|server\" vite.config.ts)",
+      "Bash(npm run *)",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://localhost:5173/)",
+      "Bash(curl -s http://localhost:5173/api/v1/status)",
+      "Bash(docker exec *)",
+      "WebSearch",
+      "Bash(xargs cat)",
+      "Bash(npx --yes create-next-app@latest frontend-next --typescript --tailwind --eslint --app --src-dir --import-alias \"@/*\" --use-npm --no-turbopack --yes)",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\('next', p.dependencies.next\\); console.log\\('react', p.dependencies.react\\); console.log\\('tailwind', \\(p.devDependencies.tailwindcss||p.dependencies.tailwindcss\\)\\); console.log\\('@tailwindcss/postcss', p.devDependencies['@tailwindcss/postcss']\\)\")",
+      "Bash(npx --yes shadcn@latest init -d -b neutral)",
+      "Bash(npx --yes shadcn@latest init -d)"
+    ]
+  }
+}

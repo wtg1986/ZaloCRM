@@ -59,6 +59,46 @@ export async function setup(
   };
 }
 
+/**
+ * Đăng ký tự phục vụ — tạo TỔ CHỨC MỚI + owner (multi-tenant), khác setup
+ * (setup chỉ chạy khi DB rỗng). Gói mặc định 'free'.
+ */
+export async function register(
+  orgName: string,
+  fullName: string,
+  email: string,
+  password: string,
+): Promise<JwtPayload> {
+  const normEmail = email.toLowerCase().trim();
+  const dup = await prisma.user.findUnique({ where: { email: normEmail } });
+  if (dup) {
+    const err = new Error('Email đã được dùng') as Error & { statusCode: number };
+    err.statusCode = 409;
+    throw err;
+  }
+  const passwordHash = await bcrypt.hash(password, 12);
+  const result = await prisma.$transaction(async (tx) => {
+    const org = await tx.organization.create({ data: { name: orgName } });
+    const user = await tx.user.create({
+      data: {
+        orgId: org.id,
+        email: normEmail,
+        passwordHash,
+        fullName,
+        role: 'owner',
+      },
+    });
+    return { org, user };
+  });
+  logger.info(`Register — org=${result.org.id}, user=${result.user.id}`);
+  return {
+    id: result.user.id,
+    email: result.user.email,
+    role: result.user.role,
+    orgId: result.org.id,
+  };
+}
+
 // Verify credentials, return JWT payload
 export async function login(email: string, password: string): Promise<JwtPayload> {
   const user = await prisma.user.findUnique({

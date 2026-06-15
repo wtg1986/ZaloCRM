@@ -7,10 +7,18 @@ import { authMiddleware } from './auth-middleware.js';
 import {
   checkSetupStatus,
   setup,
+  register,
   login,
   getProfile,
 } from './auth-service.js';
+import { prisma } from '../../shared/database/prisma-client.js';
+import {
+  getOrgUsage,
+  planLimits,
+  PLAN_LABELS,
+} from './plans.js';
 import { seedScoringDefaults } from '../scoring/seed-defaults.js';
+import { getUserGrantsInfo } from '../rbac/permission-group-service.js';
 import { logger } from '../../shared/utils/logger.js';
 
 /**
@@ -45,6 +53,38 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     return { token, user: payload };
   });
 
+  // POST /api/v1/auth/register — đăng ký tự phục vụ: tạo org mới + owner, gói free
+  app.post<{
+    Body: { orgName: string; fullName: string; email: string; password: string };
+  }>('/api/v1/auth/register', async (request, reply) => {
+    const { orgName, fullName, email, password } = request.body;
+    if (!orgName || !fullName || !email || !password) {
+      return reply.status(400).send({ error: 'Thiếu thông tin đăng ký' });
+    }
+    if (password.length < 6) {
+      return reply.status(400).send({ error: 'Mật khẩu tối thiểu 6 ký tự' });
+    }
+    const payload = await register(orgName, fullName, email, password);
+    const token = app.jwt.sign(payload, { expiresIn: '7d' });
+    autoSeedScoringIfNeeded(payload.orgId);
+    return { token, user: payload };
+  });
+
+  // GET /api/v1/me/plan — gói hiện tại + giới hạn + mức dùng (cho FE hiển thị)
+  app.get('/api/v1/me/plan', { preHandler: authMiddleware }, async (request) => {
+    const user = request.user as { orgId: string };
+    const org = await prisma.organization.findUnique({
+      where: { id: user.orgId },
+      select: { plan: true },
+    });
+    const plan = org?.plan ?? 'free';
+    const [limits, usage] = await Promise.all([
+      Promise.resolve(planLimits(plan)),
+      getOrgUsage(user.orgId),
+    ]);
+    return { plan, label: PLAN_LABELS[plan] ?? plan, limits, usage };
+  });
+
   // POST /api/v1/auth/login — verify credentials, return JWT
   app.post<{
     Body: { email: string; password: string };
@@ -64,6 +104,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   // GET /api/v1/profile — return current user (requires auth)
   app.get('/api/v1/profile', { preHandler: authMiddleware }, async (request) => {
     const user = request.user as { id: string; email: string; role: string; orgId: string };
-    return getProfile(user.id);
+    const [profile, perms] = await Promise.all([
+      getProfile(user.id),
+      getUserGrantsInfo(user.id),
+    ]);
+    // Gắn quyền hiệu lực để FE gate UI (nav/nút).
+    return { ...(profile as object), ...perms };
   });
 }

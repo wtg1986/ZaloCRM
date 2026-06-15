@@ -60,6 +60,15 @@ export async function zaloRoutes(app: FastifyInstance): Promise<void> {
         return reply.status(400).send({ error: 'Invalid proxy URL format. Use: http://[user:pass@]host:port' });
       }
 
+      // Quota gói: chặn nếu đã đạt giới hạn số nick Zalo.
+      const { assertQuota } = await import('../auth/plans.js');
+      try {
+        await assertQuota(user.orgId, 'nicks');
+      } catch (e) {
+        const err = e as { statusCode?: number; message?: string };
+        return reply.status(err.statusCode ?? 403).send({ error: err.message });
+      }
+
       // FIX 2026-05-22 Bug A: tạo nick + auto-insert ZaloAccountAccess cho owner.
       // Trước: owner KHÔNG hiện trong crew list (frontend đọc crew từ access table).
       // Giờ: atomic create cả 2 trong tx, owner mặc định permission='admin'.

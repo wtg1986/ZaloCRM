@@ -20,6 +20,7 @@ import { randomUUID } from 'node:crypto';
 import { prisma } from '../../../shared/database/prisma-client.js';
 import { authMiddleware } from '../../auth/auth-middleware.js';
 import { requireRole } from '../../auth/role-middleware.js';
+import { requireGrant } from '../../rbac/rbac-middleware.js';
 import { logger } from '../../../shared/utils/logger.js';
 import { sanitizeContactCriteria, sanitizeManualContactIds } from '../engine/segment-sanitizer.js';
 
@@ -128,7 +129,7 @@ export async function broadcastRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // Create (always starts as draft)
-  app.post(BASE, async (request: FastifyRequest, reply: FastifyReply) => {
+  app.post(BASE, { preHandler: requireGrant('broadcast', 'create') }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const user = request.user!;
       const body = request.body as Record<string, any>;
@@ -181,7 +182,7 @@ export async function broadcastRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // Update (draft state only — running broadcasts are immutable for safety)
-  app.put(`${BASE}/:id`, async (request: FastifyRequest, reply: FastifyReply) => {
+  app.put(`${BASE}/:id`, { preHandler: requireGrant('broadcast', 'edit') }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const user = request.user!;
       const { id } = request.params as { id: string };

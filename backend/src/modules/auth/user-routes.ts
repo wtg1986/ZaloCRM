@@ -71,6 +71,15 @@ export async function userRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: 'Chỉ owner có thể tạo admin' });
     }
 
+    // Quota gói: chặn nếu đã đạt giới hạn số nhân viên.
+    const { assertQuota } = await import('./plans.js');
+    try {
+      await assertQuota(currentUser.orgId, 'staff');
+    } catch (e) {
+      const err = e as { statusCode?: number; message?: string };
+      return reply.status(err.statusCode ?? 403).send({ error: err.message });
+    }
+
     const passwordHash = await bcrypt.hash(password, 10);
     let user;
     try {

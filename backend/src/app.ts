@@ -48,6 +48,7 @@ import { zinstantProxyRoutes } from './modules/contacts/zinstant-proxy-routes.js
 import { dashboardRoutes } from './modules/dashboard/dashboard-routes.js';
 import { reportRoutes } from './modules/dashboard/report-routes.js';
 import { userRoutes } from './modules/auth/user-routes.js';
+import { platformRoutes } from './modules/auth/platform-routes.js';
 import { teamRoutes } from './modules/auth/team-routes.js';
 import { orgRoutes } from './modules/auth/org-routes.js';
 import { zaloAccessRoutes } from './modules/zalo/zalo-access-routes.js';
@@ -191,6 +192,7 @@ async function bootstrap() {
   await app.register(dashboardRoutes);
   await app.register(reportRoutes);
   await app.register(userRoutes);
+  await app.register(platformRoutes);
   await app.register(teamRoutes);
   await app.register(orgRoutes);
   await app.register(zaloAccessRoutes);
@@ -279,6 +281,9 @@ async function bootstrap() {
     // native app mà friend_event listener không bắt được (xem friend-sync-cron.ts)
     const { startFriendSyncCron } = await import('./modules/zalo/friend-sync-cron.js');
     startFriendSyncCron(io);
+    // Tự động reconnect nick disconnected (có sessionData) — backoff, mỗi 2 phút.
+    const { startZaloReconnectCron } = await import('./modules/zalo/zalo-reconnect-cron.js');
+    startZaloReconnectCron();
     // Phase ZaloAccounts redesign 2026-05-22 — status log: backfill open records 1
     // lần lúc startup (idempotent), rồi start checkpoint cron (*/5 min) reconcile
     // orphan records sau crash. Uptime accuracy = 5p resolution.
@@ -317,8 +322,10 @@ async function bootstrap() {
 
   // Reconnect Zalo accounts that have saved sessions
   try {
+    // Gồm cả status='disconnected' (có sessionData) — boot xong thử nối lại luôn;
+    // cron zalo-reconnect-cron sẽ tiếp tục retry có backoff nếu vẫn rớt.
     const accounts = await prisma.zaloAccount.findMany({
-      where: { sessionData: { not: Prisma.JsonNull }, archivedAt: null, status: { not: 'disconnected' } },
+      where: { sessionData: { not: Prisma.JsonNull }, archivedAt: null },
       select: { id: true, sessionData: true },
     });
     logger.info(`Attempting reconnect for ${accounts.length} Zalo account(s)`);

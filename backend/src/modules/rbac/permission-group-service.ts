@@ -278,8 +278,34 @@ export async function userHasGrant(
     if (hasGrant(grants, resource, action)) return true;
   }
 
-  // Dual-read fallback (2 tuần): legacy role='owner' → bypass mọi quyền
-  if (user.role === 'owner') return true;
+  // Owner + admin → full access (bypass ma trận quyền). Member theo grants.
+  if (user.role === 'owner' || user.role === 'admin') return true;
 
   return false;
+}
+
+/**
+ * Quyền hiệu lực của 1 user — cho FE gate UI (nav/nút).
+ * fullAccess=true (owner/admin) → FE coi như mọi quyền true.
+ */
+export async function getUserGrantsInfo(userId: string): Promise<{
+  fullAccess: boolean;
+  grants: GrantsJson;
+  permissionGroupName: string | null;
+}> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      role: true,
+      permissionGroup: { select: { name: true, grants: true, archivedAt: true } },
+    },
+  });
+  if (!user) return { fullAccess: false, grants: {}, permissionGroupName: null };
+  const fullAccess = user.role === 'owner' || user.role === 'admin';
+  const active = user.permissionGroup && !user.permissionGroup.archivedAt;
+  return {
+    fullAccess,
+    grants: active ? ((user.permissionGroup!.grants ?? {}) as GrantsJson) : {},
+    permissionGroupName: active ? user.permissionGroup!.name : null,
+  };
 }

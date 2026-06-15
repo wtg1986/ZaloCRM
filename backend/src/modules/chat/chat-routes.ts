@@ -513,6 +513,46 @@ export async function chatRoutes(app: FastifyInstance) {
   });
 
   // ── Get single conversation ──────────────────────────────────────────────
+  // POST /api/v1/conversations/open — mở (hoặc tạo) hội thoại với 1 friend.
+  // Dùng cho "Tin nhắn mới": FE chọn nick + bạn → trả conversationId để select.
+  app.post('/api/v1/conversations/open', async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
+    const { zaloAccountId, externalThreadId, contactId, threadType } =
+      request.body as {
+        zaloAccountId?: string;
+        externalThreadId?: string;
+        contactId?: string | null;
+        threadType?: string;
+      };
+    if (!zaloAccountId || !externalThreadId) {
+      return reply.status(400).send({ error: 'zaloAccountId and externalThreadId required' });
+    }
+    // Nick phải thuộc org của user.
+    const account = await prisma.zaloAccount.findFirst({
+      where: { id: zaloAccountId, orgId: user.orgId },
+      select: { id: true },
+    });
+    if (!account) return reply.status(404).send({ error: 'Zalo account not found' });
+
+    const existing = await prisma.conversation.findFirst({
+      where: { zaloAccountId, externalThreadId, orgId: user.orgId },
+      select: { id: true },
+    });
+    if (existing) return { id: existing.id, created: false };
+
+    const created = await prisma.conversation.create({
+      data: {
+        orgId: user.orgId,
+        zaloAccountId,
+        externalThreadId,
+        contactId: contactId ?? null,
+        threadType: threadType === 'group' ? 'group' : 'user',
+      },
+      select: { id: true },
+    });
+    return { id: created.id, created: true };
+  });
+
   app.get('/api/v1/conversations/:id', async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;
     const { id } = request.params as { id: string };
@@ -544,6 +584,7 @@ export async function chatRoutes(app: FastifyInstance) {
       statusRef: { id: string; name: string; color: string | null; order: number } | null;
       zaloLabels: unknown;
       crmTagsPerNick: unknown;
+      autoTags: unknown;
       aliasInNick: string | null;
     } | null = null;
     if (conversation.threadType === 'user' && conversation.contactId && conversation.externalThreadId) {
@@ -563,6 +604,7 @@ export async function chatRoutes(app: FastifyInstance) {
           statusRef: { select: { id: true, name: true, color: true, order: true } },
           zaloLabels: true,
           crmTagsPerNick: true,
+          autoTags: true,
           aliasInNick: true,
         },
       });
@@ -775,10 +817,12 @@ export async function chatRoutes(app: FastifyInstance) {
     // 2026-05-21: thêm `styles` cho Zalo RTF (bold/italic/underline/strikethrough).
     // Format: [{st: 'b'|'i'|'u'|'s', start: number, len: number}, ...]
     // FE extract từ Tiptap editor JSON, BE pass thẳng vào api.sendMessage.
-    const { content, replyMessageId, styles } = request.body as {
+    // mentions: [{ pos, uid, len }] — FE group chat @mention → zca-js encode để Zalo notify.
+    const { content, replyMessageId, styles, mentions } = request.body as {
       content: string;
       replyMessageId?: string;
       styles?: Array<{ st: string; start: number; len: number }>;
+      mentions?: Array<{ pos: number; uid: string; len: number }>;
     };
 
     if (!content?.trim()) return reply.status(400).send({ error: 'Content required' });
@@ -836,6 +880,12 @@ export async function chatRoutes(app: FastifyInstance) {
       const sendPayload: Record<string, unknown> = { msg: content };
       if (Array.isArray(styles) && styles.length > 0) {
         sendPayload.styles = styles;
+      }
+      // Mentions chỉ áp dụng cho nhóm — zca-js bỏ qua nếu thread User.
+      if (Array.isArray(mentions) && mentions.length > 0) {
+        sendPayload.mentions = mentions
+          .filter((m) => m && typeof m.uid === 'string' && Number.isInteger(m.pos) && Number.isInteger(m.len))
+          .map((m) => ({ pos: m.pos, uid: m.uid, len: m.len }));
       }
       if (quote) sendPayload.quote = quote;
       const sendResult = await instance.api.sendMessage(sendPayload, threadId, threadType);
