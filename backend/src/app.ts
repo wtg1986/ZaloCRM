@@ -81,6 +81,7 @@ import { customerListEntryRoutes } from './modules/automation/lists/list-entry-r
 import { startListEnrichmentWorker } from './modules/automation/lists/list-enrichment-service.js';
 import { registerCustomerListEventHandlers } from './modules/automation/lists/list-event-handlers.js';
 import { aiRoutes } from './modules/ai/ai-routes.js';
+import { agentRoutes } from './modules/ai/agents/agent-routes.js';
 import { chatOperationsRoutes, registerChatSocketHandlers } from './modules/chat/chat-operations-routes.js';
 import { groupRoutes } from './modules/zalo/group-routes.js';
 import { groupModerationRoutes } from './modules/zalo/group-moderation-routes.js';
@@ -219,6 +220,7 @@ async function bootstrap() {
   await app.register(customerListRoutes);
   await app.register(customerListEntryRoutes);
   await app.register(aiRoutes);
+  await app.register(agentRoutes);
   await app.register(chatOperationsRoutes);
   await app.register(groupRoutes);
   await app.register(groupModerationRoutes);

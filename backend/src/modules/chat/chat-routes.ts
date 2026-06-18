@@ -12,6 +12,7 @@ import { logger } from '../../shared/utils/logger.js';
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'socket.io';
 import { applyContactAggregateFromMessage, applyFriendAggregate } from '../contacts/contact-aggregate.js';
+import { onHumanIntervention } from '../ai/agents/agent-autopilot.js';
 
 type QueryParams = Record<string, string>;
 
@@ -563,6 +564,7 @@ export async function chatRoutes(app: FastifyInstance) {
         contact: true,
         zaloAccount: { select: { id: true, displayName: true, avatarUrl: true, zaloUid: true, status: true } },
         pins: { select: { id: true } },
+        aiAgent: { select: { id: true, name: true, avatarUrl: true } },
       },
     });
     if (!conversation) return reply.status(404).send({ error: 'Not found' });
@@ -795,6 +797,8 @@ export async function chatRoutes(app: FastifyInstance) {
           albumKey: true,
           albumIndex: true,
           albumTotal: true,
+          // AI Agent 2026-06-16 — tin do AI gửi (FE gắn nhãn "AI · tên")
+          sentByAgentId: true,
           reactions: { select: { emoji: true, reactorId: true } },
         },
       }),
@@ -957,6 +961,9 @@ export async function chatRoutes(app: FastifyInstance) {
           ownerUserId: conversation.zaloAccount.ownerUserId,
         },
       });
+
+      // AI Agent: người thật gửi tin qua CRM → tắt autopilot (paused tới khi bật tay).
+      void onHumanIntervention(id, io);
 
       return safeMessage;
     } catch (err) {

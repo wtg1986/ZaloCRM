@@ -26,3 +26,7 @@ export const updateUser = (
 
 export const deleteUser = (id: string) =>
   apiDelete<unknown>(`/users/${id}`);
+
+// Đổi mật khẩu của CHÍNH MÌNH (xác thực mật khẩu hiện tại) — mọi role.
+export const changeMyPassword = (currentPassword: string, newPassword: string) =>
+  apiPut<{ ok: boolean }>("/me/password", { currentPassword, newPassword });

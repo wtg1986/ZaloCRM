@@ -223,6 +223,38 @@ async function mirrorInboundMediaContent(msg: IncomingMessage): Promise<string> 
   return JSON.stringify(parsed);
 }
 
+/**
+ * Một số sự kiện thu hồi (undo) tới như 'message' bình thường với content là
+ * object {globalMsgId, cliMsgId, deleteMsg, srcId, destId} thay vì event 'undo'.
+ * Nếu phát hiện shape này → trả về ref tin gốc để soft-delete, KHÔNG lưu tin rác.
+ */
+function parseUndoPacket(
+  content?: string | null,
+): { globalMsgIdNum: bigint | null; cliMsgIdNum: bigint | null } | null {
+  if (!content) return null;
+  const c = content.trim();
+  if (!c.startsWith('{')) return null;
+  let o: Record<string, unknown>;
+  try {
+    o = JSON.parse(c);
+  } catch {
+    return null;
+  }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+  const hasUndoId = 'globalMsgId' in o || 'globalDelMsgId' in o || 'clientDelMsgId' in o;
+  const hasMarker = 'destId' in o || 'deleteMsg' in o;
+  if (!hasUndoId || !hasMarker) return null;
+  const toBig = (v: unknown): bigint | null => {
+    if (v == null) return null;
+    const s = String(v).trim();
+    return /^\d+$/.test(s) ? BigInt(s) : null;
+  };
+  const globalMsgIdNum = toBig(o.globalMsgId ?? o.globalDelMsgId);
+  const cliMsgIdNum = toBig(o.cliMsgId ?? o.clientDelMsgId);
+  if (!globalMsgIdNum && !cliMsgIdNum) return null;
+  return { globalMsgIdNum, cliMsgIdNum };
+}
+
 export async function handleIncomingMessage(
   msg: IncomingMessage,
 ): Promise<HandleMessageResult | null> {
@@ -232,6 +264,14 @@ export async function handleIncomingMessage(
       select: { orgId: true, ownerUserId: true },
     });
     if (!account) return null;
+
+    // Gói thu hồi lọt vào luồng 'message' → xử lý như undo (đánh dấu tin gốc đã
+    // xoá), không tạo tin rác hiển thị JSON thô.
+    const undoRef = parseUndoPacket(msg.content);
+    if (undoRef) {
+      await handleMessageUndo(msg.accountId, undoRef);
+      return null;
+    }
 
     const contactId = await upsertContact(msg, account.orgId);
 

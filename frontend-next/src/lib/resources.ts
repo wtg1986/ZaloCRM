@@ -1,5 +1,5 @@
 // Hàm gọi API theo từng tài nguyên — dùng trong component qua SWR/React.
-import { apiGet, apiPost, apiUpload } from "@/lib/api";
+import { apiGet, apiPost, apiPut, apiUpload } from "@/lib/api";
 import {
   actionMessage,
   callInfo,
@@ -41,6 +41,37 @@ export const syncHistory = (id: string) =>
 // Kết nối lại từ session đã lưu (không cần QR nếu session còn sống).
 export const reconnectAccount = (id: string) =>
   apiPost<{ message?: string }>(`/zalo-accounts/${id}/reconnect`, {});
+
+// Thông tin tổ chức (tên, múi giờ) — cho phần Cài đặt tổ chức.
+export interface OrgInfo {
+  id: string;
+  name: string;
+  timezone: string;
+  slug?: string | null;
+  logoUrl?: string | null;
+  brandColor?: string | null;
+  plan?: string;
+  createdAt?: string;
+}
+export const getOrganization = () => apiGet<OrgInfo>("/organization");
+export const updateOrganization = (input: {
+  name?: string;
+  timezone?: string;
+  slug?: string | null;
+  brandColor?: string | null;
+  logoUrl?: string | null;
+}) => apiPut<OrgInfo>("/organization", input);
+
+/** Kiểm tra subdomain còn trống (debounce ở UI). */
+export const checkOrgSlug = (slug: string) =>
+  apiGet<{ available: boolean; reason?: string }>("/organization/slug-available", { slug });
+
+/** Upload logo tổ chức (multipart) — trả về URL công khai đã lưu. */
+export const uploadOrgLogo = (file: File) => {
+  const form = new FormData();
+  form.append("file", file);
+  return apiUpload<{ logoUrl: string }>("/organization/logo", form);
+};
 
 // Gói dịch vụ hiện tại + giới hạn + mức dùng.
 export interface PlanInfo {

@@ -38,10 +38,15 @@ export function TagManager() {
 
   return (
     <Card>
-      <CardHeader className="flex-row items-center justify-between space-y-0">
-        <CardTitle className="text-sm">
-          Nhãn CRM {data ? `(${tags.length})` : ""}
-        </CardTitle>
+      <CardHeader className="flex-row items-start justify-between space-y-0">
+        <div>
+          <CardTitle className="text-sm">
+            Nhãn CRM {data ? `(${tags.length})` : ""}
+          </CardTitle>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Nhãn màu phân loại khách — dùng để lọc &amp; chăm sóc.
+          </p>
+        </div>
         <Button size="sm" variant="outline" onClick={() => setEditing("new")}>
           <Plus className="size-4" /> Thêm
         </Button>

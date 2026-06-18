@@ -2,7 +2,8 @@
 
 import * as React from "react";
 import useSWR from "swr";
-import { MessageSquareDashed } from "lucide-react";
+import { EmptyState } from "@/components/ui/empty-state";
+import { EmptyChatArt } from "@/components/ui/illustrations";
 import { getZaloAccounts } from "@/lib/resources";
 import { ConversationList } from "@/components/inbox/conversation-list";
 import { MessageThread } from "@/components/inbox/message-thread";
@@ -42,17 +43,12 @@ export default function InboxPage() {
       {selectedId ? (
         <MessageThread key={selectedId} conversationId={selectedId} />
       ) : (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 bg-background text-center">
-          <div className="grid size-16 place-items-center rounded-2xl bg-muted">
-            <MessageSquareDashed className="size-8 text-muted-foreground" />
-          </div>
-          <div className="space-y-1">
-            <p className="text-sm font-medium">Chọn một hội thoại để bắt đầu</p>
-            <p className="max-w-xs text-xs text-muted-foreground">
-              Tất cả tin nhắn từ các nick Zalo của đội gom về đây — không sót
-              một khách nào.
-            </p>
-          </div>
+        <div className="flex flex-1 items-center justify-center bg-background">
+          <EmptyState
+            art={<EmptyChatArt />}
+            title="Chọn một hội thoại để bắt đầu"
+            description="Tất cả tin nhắn từ các nick Zalo của đội gom về đây — không sót một khách nào."
+          />
         </div>
       )}
 

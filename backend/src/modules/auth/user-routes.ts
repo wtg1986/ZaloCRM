@@ -34,6 +34,27 @@ function isUniqueViolation(err: unknown): boolean {
 export async function userRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authMiddleware);
 
+  // PUT /api/v1/me/password — đổi mật khẩu CỦA CHÍNH MÌNH (mọi role).
+  // Khác /users/:id/password (owner/admin reset người khác): bắt buộc xác thực
+  // mật khẩu hiện tại trước khi đổi.
+  app.put('/api/v1/me/password', async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
+    const { currentPassword, newPassword } = (request.body ?? {}) as {
+      currentPassword?: string;
+      newPassword?: string;
+    };
+    if (!newPassword || newPassword.length < 6) {
+      return reply.status(400).send({ error: 'Mật khẩu mới tối thiểu 6 ký tự' });
+    }
+    const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
+    if (!dbUser) return reply.status(404).send({ error: 'Không tìm thấy tài khoản' });
+    const ok = await bcrypt.compare(currentPassword ?? '', dbUser.passwordHash);
+    if (!ok) return reply.status(400).send({ error: 'Mật khẩu hiện tại không đúng' });
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    await prisma.user.update({ where: { id: user.id }, data: { passwordHash } });
+    return { ok: true };
+  });
+
   // GET /api/v1/users — list all users in org
   app.get('/api/v1/users', async (request: FastifyRequest) => {
     const user = request.user!;

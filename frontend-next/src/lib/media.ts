@@ -362,23 +362,41 @@ export function actionMessage(
 // đọc được, không nên render thô thành bong bóng.
 export function isRecallEvent(m: ChatMessage): boolean {
   const c = (m.content || "").trim();
-  if (!c.startsWith("[")) return false;
-  try {
-    const arr = JSON.parse(c);
-    return (
-      Array.isArray(arr) &&
-      arr.some(
-        (x) =>
-          x &&
-          typeof x === "object" &&
-          ("clientDelMsgId" in x ||
-            "globalDelMsgId" in x ||
-            (x as Record<string, unknown>).actionType != null),
-      )
-    );
-  } catch {
-    return false;
+  // Shape mảng (cũ): [{ clientDelMsgId / globalDelMsgId / actionType }]
+  if (c.startsWith("[")) {
+    try {
+      const arr = JSON.parse(c);
+      return (
+        Array.isArray(arr) &&
+        arr.some(
+          (x) =>
+            x &&
+            typeof x === "object" &&
+            ("clientDelMsgId" in x ||
+              "globalDelMsgId" in x ||
+              (x as Record<string, unknown>).actionType != null),
+        )
+      );
+    } catch {
+      return false;
+    }
   }
+  // Shape object (gói undo lọt vào content):
+  // {"globalMsgId":..,"cliMsgId":..,"deleteMsg":0,"srcId":0,"destId":".."}
+  if (c.startsWith("{")) {
+    try {
+      const o = JSON.parse(c) as Record<string, unknown>;
+      if (o && typeof o === "object" && !Array.isArray(o)) {
+        const hasUndoId =
+          "globalMsgId" in o || "globalDelMsgId" in o || "clientDelMsgId" in o;
+        const hasUndoMarker = "destId" in o || "deleteMsg" in o;
+        return hasUndoId && hasUndoMarker;
+      }
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 /** Văn bản hiển thị cho link/card khi content là JSON. */

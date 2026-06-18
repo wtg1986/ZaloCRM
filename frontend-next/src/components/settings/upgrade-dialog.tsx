@@ -15,13 +15,17 @@ import { Modal } from "@/components/staff/ui";
 
 export function UpgradeDialog({
   currentPlan,
+  initialPlan,
   onClose,
 }: {
   currentPlan: string;
+  initialPlan?: string;
   onClose: () => void;
 }) {
   const { user } = useAuth();
-  const [picked, setPicked] = React.useState<PlanCatalogItem | null>(null);
+  const [picked, setPicked] = React.useState<PlanCatalogItem | null>(
+    () => PLAN_CATALOG.find((p) => p.key === initialPlan && p.priceMonthly > 0) ?? null,
+  );
   const orgRef = (user?.orgId ?? "").slice(0, 8).toUpperCase();
   const transferNote = picked
     ? `NANGGOI ${orgRef} ${picked.key.toUpperCase()}`

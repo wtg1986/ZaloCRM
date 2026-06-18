@@ -11,6 +11,7 @@ import { handleIncomingMessage, handleMessageUndo } from '../chat/message-handle
 import { detectContentType, extractAlbumInfo, updateContactAvatar } from './zalo-message-helpers.js';
 import { handleFriendEvent } from './friend-event-handler.js';
 import { consumeIfExpected as consumeReactionEcho } from '../chat/reaction-echo-cache.js';
+import { onInboundCustomerMessage, onHumanIntervention, isAgentEcho } from '../ai/agents/agent-autopilot.js';
 
 // Map Zalo Reactions enum code → display emoji (cùng map với chat-operations-routes)
 const ZALO_REACTION_DISPLAY: Record<string, string> = {
@@ -465,6 +466,18 @@ export function attachZaloListener(ctx: ListenerContext): void {
             ownerUserId: accInfo.ownerUserId,
           } : undefined,
         });
+
+        // AI Agent autopilot:
+        //  - tin của KHÁCH (non-self) → lên lịch tiếp quản sau N giây.
+        //  - tin SELF không phải echo của agent (người thật gõ từ điện thoại) → tắt AI.
+        const m = result.message as { senderType?: string; zaloMsgId?: string | null };
+        if (m.senderType === 'self') {
+          if (!isAgentEcho(m.zaloMsgId)) {
+            void onHumanIntervention(result.conversationId, io);
+          }
+        } else {
+          void onInboundCustomerMessage(result.conversationId, io);
+        }
       }
     } catch (err) {
       logger.error(`[zalo:${accountId}] Message handler error:`, err);

@@ -49,6 +49,11 @@ export const BANK_INFO = {
   holder: "NGUYEN VAN A",
 };
 
+// Tên miền gốc cho workspace của tổ chức (subdomain).
+// Org slug "acme" → acme.zalocrm.vn. Đổi thành tên miền thật của bạn khi deploy.
+// Routing subdomain thật cần wildcard DNS (*.zalocrm.vn) + reverse proxy + TLS.
+export const WORKSPACE_DOMAIN = "zalocrm.vn";
+
 export function formatVnd(n: number): string {
   return n === 0 ? "Miễn phí" : `${n.toLocaleString("vi-VN")}đ/tháng`;
 }

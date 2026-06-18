@@ -46,6 +46,8 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Select, SelectItem, SelectGroup } from "@/components/ui/select";
+import { EmptyState } from "@/components/ui/empty-state";
+import { EmptyContactsArt, EmptySearchArt } from "@/components/ui/illustrations";
 import { PipelineBoard } from "@/components/contacts/pipeline-board";
 import { ContactFormDialog } from "@/components/contacts/contact-form-dialog";
 import { ImportDialog } from "@/components/contacts/import-dialog";
@@ -609,17 +611,22 @@ function TableSkeleton() {
 
 function Empty({ search, canAdd, onAdd }: { search: string; canAdd: boolean; onAdd: () => void }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-2 px-6 py-24 text-center">
-      <div className="grid size-12 place-items-center rounded-full bg-muted">
-        <Users className="size-6 text-muted-foreground" />
-      </div>
-      <p className="text-sm font-medium">{search ? "Không tìm thấy khách phù hợp" : "Chưa có khách hàng"}</p>
-      <p className="max-w-xs text-xs text-muted-foreground">
-        {search ? "Thử từ khoá khác hoặc số điện thoại." : "Thêm thủ công, nhập CSV, hoặc khách tự xuất hiện khi nhắn qua Zalo."}
-      </p>
-      {!search && canAdd ? (
-        <Button variant="outline" size="sm" className="mt-2" onClick={onAdd}><Plus className="size-4" /> Thêm khách hàng</Button>
-      ) : null}
-    </div>
+    <EmptyState
+      className="py-20"
+      art={search ? <EmptySearchArt /> : <EmptyContactsArt />}
+      title={search ? "Không tìm thấy khách phù hợp" : "Chưa có khách hàng"}
+      description={
+        search
+          ? "Thử từ khoá khác hoặc số điện thoại."
+          : "Thêm thủ công, nhập CSV, hoặc khách tự xuất hiện khi nhắn qua Zalo."
+      }
+      action={
+        !search && canAdd ? (
+          <Button variant="outline" size="sm" onClick={onAdd}>
+            <Plus className="size-4" /> Thêm khách hàng
+          </Button>
+        ) : null
+      }
+    />
   );
 }

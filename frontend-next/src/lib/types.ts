@@ -54,6 +54,8 @@ export interface ChatMessage {
   quote?: unknown;
   albumKey?: string | null;
   reactions?: { emoji: string; reactorId: string | null }[];
+  // AI Agent 2026-06-16 — tin do AI gửi (id agent) → FE gắn nhãn "AI".
+  sentByAgentId?: string | null;
 }
 
 export interface ContactLite {
@@ -102,6 +104,11 @@ export interface Conversation {
   } | null;
   contact: ContactLite | null;
   zaloAccount: Pick<ZaloAccount, "id" | "displayName" | "avatarUrl"> | null;
+  // AI Agent 2026-06-16 — trạng thái autopilot cho hội thoại này.
+  aiState?: "off" | "armed" | "active" | "paused" | string | null;
+  aiAgentId?: string | null;
+  aiPausedReason?: string | null;
+  aiAgent?: { id: string; name: string; avatarUrl?: string | null } | null;
   // List trả kèm tin cuối (preview); endpoint chi tiết /:id KHÔNG kèm → optional.
   messages?: Pick<
     ChatMessage,

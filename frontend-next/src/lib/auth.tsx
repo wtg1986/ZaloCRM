@@ -9,6 +9,7 @@ interface AuthState {
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
+  refresh: () => Promise<void>;
 }
 
 const AuthContext = React.createContext<AuthState | null>(null);
@@ -61,8 +62,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     window.location.href = "/login";
   }, []);
 
+  const refresh = React.useCallback(async () => {
+    if (!getToken()) return;
+    try {
+      const profile = await apiGet<AuthUser>("/profile");
+      setUser(profile);
+    } catch {
+      /* giữ user hiện tại nếu lỗi mạng */
+    }
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, refresh }}>
       {children}
     </AuthContext.Provider>
   );

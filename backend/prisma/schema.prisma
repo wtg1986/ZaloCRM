@@ -15,6 +15,12 @@ model Organization {
   timezone  String   @default("+07:00")
   // Gói dịch vụ — quota nick/nhân viên/contact suy ra từ PLAN_LIMITS (code).
   plan      String   @default("free")
+  // Branding tổ chức (tự phục vụ ở Cài đặt → Tổng quan tổ chức).
+  // slug = subdomain workspace (vd "acme" → acme.<domain>), unique toàn hệ thống.
+  // Routing subdomain thật cần wildcard DNS + reverse proxy lúc deploy (xem docs).
+  slug       String?  @unique
+  logoUrl    String?  @map("logo_url")
+  brandColor String?  @map("brand_color")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -44,6 +50,8 @@ model Organization {
   zaloLabels              ZaloLabel[]
   crmTags                 CrmTag[]
   crmTagGroups            CrmTagGroup[]
+  // Phase AI Agents 2026-06-16 — trợ lý AI tự động trả lời
+  aiAgents                AiAgent[]
   // Phase 6 — Lead Scoring Engine relations
   scoringConfig           ScoringConfig?
   scoreSignalRules        ScoreSignalRule[]
@@ -172,10 +180,13 @@ model ZaloAccount {
   privacyMode     String    @default("sub") @map("privacy_mode")
   archivedAt      DateTime? @map("archived_at")
   purged          Boolean   @default(false)
+  // Phase AI Agents 2026-06-16 — agent mặc định tự đính cho MỌI hội thoại mới của nick này.
+  defaultAiAgentId String?  @map("default_ai_agent_id")
   createdAt       DateTime  @default(now()) @map("created_at")
 
   org                Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
   owner              User                  @relation(fields: [ownerUserId], references: [id])
+  defaultAiAgent     AiAgent?              @relation("NickDefaultAgent", fields: [defaultAiAgentId], references: [id], onDelete: SetNull)
   access             ZaloAccountAccess[]
   conversations      Conversation[]
   dailyStats         DailyMessageStat[]
@@ -478,11 +489,19 @@ model Conversation {
   unreadCount       Int       @default(0) @map("unread_count")
   isReplied         Boolean   @default(true) @map("is_replied")
   tab               String    @default("main") @map("tab") // main, other
+  // Phase AI Agents 2026-06-16 — autopilot trả lời tự động.
+  // aiState: off (chưa đính) | armed (đã đính, chờ) | active (đang tự trả lời) | paused (người thật xen vào)
+  aiAgentId         String?   @map("ai_agent_id")
+  aiState           String    @default("off") @map("ai_state")
+  aiAutoReplyCount  Int       @default(0) @map("ai_auto_reply_count")
+  aiPausedReason    String?   @map("ai_paused_reason")
+  aiLastReplyAt     DateTime? @map("ai_last_reply_at")
   createdAt         DateTime  @default(now()) @map("created_at")
 
   org           Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
   zaloAccount   ZaloAccount          @relation(fields: [zaloAccountId], references: [id], onDelete: Cascade)
   contact       Contact?             @relation(fields: [contactId], references: [id])
+  aiAgent       AiAgent?             @relation("ConversationAiAgent", fields: [aiAgentId], references: [id], onDelete: SetNull)
   messages      Message[]
   aiSuggestions AiSuggestion[]
   pins          PinnedConversation[]
@@ -497,6 +516,8 @@ model Conversation {
   @@index([orgId, threadType, zaloAccountId, lastMessageAt(sort: Desc)])
   // Tab Chính/Khác: filter tab + accountId, sort lastMessageAt desc.
   @@index([orgId, tab, zaloAccountId, lastMessageAt(sort: Desc)])
+  // Phase AI Agents 2026-06-16 — reconcile cron quét hội thoại armed/active.
+  @@index([aiState])
   @@map("conversations")
 }
 
@@ -541,6 +562,9 @@ model Message {
   // 'automation' = bot/sequence/broadcast/NBA suggest gửi qua engine
   // 'system' = CRM internal (reminder card, system notice — chưa dùng, reserved)
   sentVia         String    @default("user") @map("sent_via")
+  // Phase AI Agents 2026-06-16 — tin do AI Agent gửi (id agent). Dùng để: (1) hiển thị nhãn
+  // "AI · tên" ở UI, (2) bỏ qua khi phát hiện "người thật xen vào" (không tự tắt vì tin của chính nó).
+  sentByAgentId   String?   @map("sent_by_agent_id")
   createdAt       DateTime  @default(now()) @map("created_at")
 
   conversation Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
@@ -995,6 +1019,42 @@ model AiSuggestion {
   @@index([conversationId, createdAt])
   @@index([orgId, type, createdAt])
   @@map("ai_suggestions")
+}
+
+// Phase AI Agents 2026-06-16 — Trợ lý AI có nhân cách/ngành nghề, tự động trả lời khách.
+// Mỗi agent có system prompt + tri thức (FAQ) + guardrails. Đính vào hội thoại để autopilot.
+model AiAgent {
+  id               String   @id @default(uuid())
+  orgId            String   @map("org_id")
+  name             String
+  role             String?            // vai trò hiển thị, vd "Tư vấn viên spa"
+  industry         String?            // preset ngành (spa, realestate, retail, edu, fnb, ...)
+  avatarUrl        String?  @map("avatar_url")
+  systemPrompt     String   @map("system_prompt")      // phong cách + nhiệm vụ
+  knowledge        String?            // tri thức/FAQ bổ sung, ghép vào prompt
+  greeting         String?            // câu chào tùy chọn khi đính agent
+  // Provider/model override; null = dùng AiConfig của org.
+  provider         String?
+  model            String?
+  temperature      Float    @default(0.7)
+  // autonomy: auto = tự gửi luôn; draft = soạn nháp (AiSuggestion) chờ người duyệt.
+  autonomy         String   @default("auto")
+  takeoverDelaySec Int      @default(10) @map("takeover_delay_sec") // chờ N giây trước khi tiếp quản
+  maxAutoReplies   Int      @default(5)  @map("max_auto_replies")   // số lần tự trả lời tối đa / hội thoại
+  handoffKeywords  String[] @default([]) @map("handoff_keywords")   // gặp từ này → bàn giao người thật
+  handleGroups     Boolean  @default(false) @map("handle_groups")   // có xử lý chat nhóm không
+  activeHours      Json?    @map("active_hours")                    // {start,end,days} — null = 24/7
+  enabled          Boolean  @default(true)
+  createdByUserId  String?  @map("created_by_user_id")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  org             Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  conversations   Conversation[] @relation("ConversationAiAgent")
+  defaultForNicks ZaloAccount[]  @relation("NickDefaultAgent")
+
+  @@index([orgId])
+  @@map("ai_agents")
 }
 
 // ── Ported from openzca ────────────────────────────────────────────────────

@@ -5,6 +5,7 @@ import useSWR from "swr";
 import { toast } from "sonner";
 import {
   BarChart3,
+  Bot,
   Check,
   CheckCheck,
   Clock3,
@@ -12,10 +13,12 @@ import {
   File as FileIcon,
   Forward,
   Loader2,
-  MessagesSquare,
   MoreVertical,
+  Pause,
   Pencil,
   Phone,
+  Play,
+  Power,
   Reply,
   Search,
   IdCard,
@@ -87,6 +90,8 @@ import {
   videoUrl,
 } from "@/lib/media";
 import { AnimatedSticker } from "@/components/inbox/animated-sticker";
+import { EmptyState } from "@/components/ui/empty-state";
+import { EmptyChatArt, EmptySearchArt } from "@/components/ui/illustrations";
 import { ApiError } from "@/lib/api";
 import type { ChatMessage, ChatMessageEvent, Conversation } from "@/lib/types";
 import { assignContact, isFriend } from "@/lib/crm";
@@ -101,6 +106,13 @@ import {
   unfriend,
 } from "@/lib/zalo-actions";
 import { getUsers } from "@/lib/team";
+import {
+  getAgents,
+  attachAgent,
+  pauseAgent,
+  resumeAgent,
+  PAUSE_REASON_LABEL,
+} from "@/lib/ai-agents";
 import { useAuth } from "@/lib/auth";
 import { getSocket } from "@/lib/socket";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -274,6 +286,33 @@ export function MessageThread({ conversationId }: { conversationId: string }) {
       socket.off("chat:reactions", refresh);
     };
   }, [convId, mutate]);
+
+  // AI Agent: trạng thái autopilot đổi (đính/tự gửi/tạm dừng) → refresh header.
+  React.useEffect(() => {
+    const socket = getSocket();
+    const onState = (evt: { conversationId?: string }) => {
+      if (evt?.conversationId && evt.conversationId !== convId) return;
+      mutateConv();
+    };
+    const onHandoff = (evt: { conversationId?: string; reason?: string }) => {
+      if (evt?.conversationId !== convId) return;
+      toast.message(
+        `AI đã bàn giao cho người thật: ${PAUSE_REASON_LABEL[evt.reason ?? ""] ?? "cần hỗ trợ"}`,
+      );
+    };
+    const onError = (evt: { conversationId?: string; message?: string }) => {
+      if (evt?.conversationId !== convId) return;
+      toast.error(evt.message ?? "AI chưa trả lời được");
+    };
+    socket.on("ai:state", onState);
+    socket.on("ai:handoff", onHandoff);
+    socket.on("ai:error", onError);
+    return () => {
+      socket.off("ai:state", onState);
+      socket.off("ai:handoff", onHandoff);
+      socket.off("ai:error", onError);
+    };
+  }, [convId, mutateConv]);
 
   // Typing của khách (zalo:typing) — khớp theo threadId + accountId.
   const threadId = conversation?.externalThreadId;
@@ -506,6 +545,9 @@ export function MessageThread({ conversationId }: { conversationId: string }) {
               onChanged={() => mutateConv()}
             />
           ) : null}
+          {conversation ? (
+            <AiAgentControl conversation={conversation} onChanged={() => mutateConv()} />
+          ) : null}
           {conversation?.contact?.id ? (
             <AssignControl
               contactId={conversation.contact.id}
@@ -586,14 +628,16 @@ export function MessageThread({ conversationId }: { conversationId: string }) {
               <Loader2 className="size-5 animate-spin text-muted-foreground" />
             </div>
           ) : shown.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 py-20 text-center text-muted-foreground">
-              <MessagesSquare className="size-7" />
-              <p className="text-sm">
-                {search.trim()
-                  ? "Không có tin nhắn khớp."
-                  : "Chưa có tin nhắn nào trong hội thoại này."}
-              </p>
-            </div>
+            <EmptyState
+              className="py-16"
+              art={search.trim() ? <EmptySearchArt /> : <EmptyChatArt />}
+              title={search.trim() ? "Không có tin nhắn khớp" : "Chưa có tin nhắn nào"}
+              description={
+                search.trim()
+                  ? "Thử từ khoá khác hoặc xoá bộ lọc tìm kiếm."
+                  : "Hãy gửi lời chào đầu tiên để bắt đầu cuộc trò chuyện."
+              }
+            />
           ) : (
             rows.map((row, ri) => {
               const m = row[0];
@@ -900,6 +944,125 @@ function AssignControl({
               {u.fullName || u.email}
             </DropdownMenuItem>
           ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function AiAgentControl({
+  conversation,
+  onChanged,
+}: {
+  conversation: Conversation;
+  onChanged: () => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+  const { data } = useSWR(open ? "ai-agents-enabled" : null, getAgents);
+  const agents = (data?.agents ?? []).filter((a) => a.enabled);
+  const state = conversation.aiState ?? "off";
+  const agentName = conversation.aiAgent?.name;
+  const reason = conversation.aiPausedReason ?? undefined;
+
+  async function run(fn: () => Promise<unknown>, ok?: string) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await fn();
+      if (ok) toast.success(ok);
+      onChanged();
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : "Thao tác thất bại");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const tone =
+    state === "active"
+      ? "text-success border-success/40"
+      : state === "armed"
+        ? "text-primary border-primary/40"
+        : state === "paused"
+          ? "text-warning border-warning/40"
+          : "text-muted-foreground";
+  const label =
+    state === "off"
+      ? "Đính AI"
+      : state === "paused"
+        ? "AI tạm dừng"
+        : agentName || "AI";
+
+  return (
+    <DropdownMenu onOpenChange={setOpen}>
+      <DropdownMenuTrigger
+        render={
+          <button
+            className={cn(
+              "flex h-8 items-center gap-1.5 rounded-lg border px-2 text-xs hover:bg-accent",
+              tone,
+            )}
+            title={reason ? PAUSE_REASON_LABEL[reason] ?? "AI tạm dừng" : "Trợ lý AI tự động"}
+            aria-label="Trợ lý AI"
+          >
+            {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Bot className="size-3.5" />}
+            <span className="max-w-28 truncate">{label}</span>
+            {state === "active" ? (
+              <span className="size-1.5 animate-pulse rounded-full bg-success" />
+            ) : null}
+          </button>
+        }
+      />
+      <DropdownMenuContent align="end" className="max-h-80 w-60 overflow-y-auto">
+        {state !== "off" ? (
+          <>
+            {reason ? (
+              <div className="px-2 py-1 text-[11px] text-muted-foreground">
+                {PAUSE_REASON_LABEL[reason] ?? "Đã tạm dừng"}
+              </div>
+            ) : null}
+            {state === "paused" ? (
+              <DropdownMenuItem onClick={() => run(() => resumeAgent(conversation.id), "Đã bật lại AI")}>
+                <Play className="size-4" /> Bật lại AI
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem onClick={() => run(() => pauseAgent(conversation.id), "Đã tạm dừng AI")}>
+                <Pause className="size-4" /> Tạm dừng AI
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuItem
+              variant="destructive"
+              onClick={() => run(() => attachAgent(conversation.id, null), "Đã gỡ AI")}
+            >
+              <Power className="size-4" /> Gỡ AI khỏi hội thoại
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <div className="px-2 py-1 text-[11px] font-medium text-muted-foreground">Đổi agent</div>
+          </>
+        ) : (
+          <div className="px-2 py-1 text-[11px] font-medium text-muted-foreground">
+            Chọn agent để đính
+          </div>
+        )}
+        {agents.length === 0 ? (
+          <DropdownMenuItem disabled>Chưa có agent — tạo ở tab Agent AI</DropdownMenuItem>
+        ) : (
+          agents.map((a) => (
+            <DropdownMenuItem
+              key={a.id}
+              onClick={() => run(() => attachAgent(conversation.id, a.id), "Đã đính AI")}
+            >
+              <Bot
+                className={cn(
+                  "size-4",
+                  a.id === conversation.aiAgentId ? "text-primary" : "opacity-50",
+                )}
+              />
+              <span className="min-w-0 flex-1 truncate">{a.name}</span>
+              {a.id === conversation.aiAgentId ? <Check className="size-3.5 text-primary" /> : null}
+            </DropdownMenuItem>
+          ))
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -1233,6 +1396,17 @@ function MessageRow({
     (conversation && !isGroup ? conversationTitle(conversation) : "Thành viên");
   const quote = quotePreview(m.quote);
   const canEdit = isSelf && (m.contentType === "text" || !m.contentType);
+  // Nội dung media/thumbnail tự có khung riêng (ảnh, video, gif, link-preview,
+  // file, sticker, album ảnh) → KHÔNG bọc bong bóng màu. Chỉ text/poll/call/
+  // card/danh thiếp mới cần bong bóng để có nền.
+  const bare =
+    !!album ||
+    m.contentType === "sticker" ||
+    m.contentType === "image" ||
+    m.contentType === "gif" ||
+    m.contentType === "video" ||
+    m.contentType === "link" ||
+    m.contentType === "file";
 
   return (
     <div
@@ -1272,8 +1446,8 @@ function MessageRow({
           <div
             className={cn(
               "relative min-w-0 text-sm",
-              // Sticker: không bọc bong bóng màu.
-              m.contentType === "sticker"
+              // Media (ảnh/video/gif/link/file/sticker/album): không bọc bong bóng màu.
+              bare
                 ? ""
                 : cn(
                     "rounded-2xl px-3 py-1.5",
@@ -1287,9 +1461,11 @@ function MessageRow({
               <div
                 className={cn(
                   "mb-1 border-l-2 pl-2 text-xs",
-                  isSelf
-                    ? "border-chat-out-foreground/40 text-chat-out-foreground/80"
-                    : "border-primary/50 text-muted-foreground",
+                  bare
+                    ? "border-primary/50 text-muted-foreground"
+                    : isSelf
+                      ? "border-chat-out-foreground/40 text-chat-out-foreground/80"
+                      : "border-primary/50 text-muted-foreground",
                 )}
               >
                 {quote.sender ? (
@@ -1307,13 +1483,18 @@ function MessageRow({
             <div
               className={cn(
                 "mt-0.5 flex items-center justify-end gap-1 text-[10px] leading-none",
-                m.contentType === "sticker"
+                bare
                   ? "text-muted-foreground"
                   : isSelf
                     ? "text-chat-out-foreground/65"
                     : "text-muted-foreground",
               )}
             >
+              {m.sentByAgentId ? (
+                <span className="inline-flex items-center gap-0.5 font-medium opacity-90" title={m.senderName ? `Trả lời bởi AI · ${m.senderName}` : "Trả lời tự động bởi AI"}>
+                  <Bot className="size-3" /> AI
+                </span>
+              ) : null}
               {m.editedAt ? <span className="italic">đã sửa</span> : null}
               <span>{clockTime(m.sentAt)}</span>
               {isSelf && isLastSelf ? <Receipt m={m} /> : null}

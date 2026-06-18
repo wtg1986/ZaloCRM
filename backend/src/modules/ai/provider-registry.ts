@@ -40,8 +40,10 @@ function buildProviders(): ProviderDef[] {
       baseUrl: config.geminiBaseUrl,
       authToken: config.geminiAuthToken,
       models: [
-        m('Gemini Pro', config.geminiDefaultProModel),
+        // Flash đặt trước → là model mặc định khi chọn Gemini (rẻ/nhanh + hạn mức
+        // free cao hơn nhiều; Pro free tier gần như không dùng được → hay dính 429).
         m('Gemini Flash', config.geminiDefaultFlashModel),
+        m('Gemini Pro', config.geminiDefaultProModel),
       ].filter(Boolean) as ProviderModel[],
     },
     {

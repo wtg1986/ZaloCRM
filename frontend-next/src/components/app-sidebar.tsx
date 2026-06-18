@@ -2,19 +2,24 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import useSWR from "swr";
 import {
   BarChart3,
+  Bot,
   CalendarDays,
   LogOut,
   MessageSquare,
   Megaphone,
   Settings,
+  ShieldCheck,
   UserCog,
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import { useCan } from "@/lib/permissions";
+import { getPlatformMe } from "@/lib/platform";
+import { getOrganization } from "@/lib/resources";
 import { ThemeToggle } from "@/components/theme-toggle";
 import {
   Avatar,
@@ -46,11 +51,18 @@ export function AppSidebar() {
   const pathname = usePathname();
   const { user, logout } = useAuth();
   const can = useCan();
+  const { data: platformMe } = useSWR("platform-me", getPlatformMe);
+  const { data: org } = useSWR("organization", getOrganization);
   const canManageStaff = user?.role === "owner" || user?.role === "admin";
   // Ẩn tab nếu member không có quyền (resource.access). owner/admin thấy hết.
   const navItems = NAV.filter((item) => !item.perm || can(item.perm, "access"));
   if (canManageStaff) {
+    navItems.push({ href: "/ai-agents", label: "Agent AI", icon: Bot });
     navItems.push({ href: "/nhan-vien", label: "Nhân viên", icon: UserCog });
+  }
+  // Quản trị nền tảng — CHỈ chủ dịch vụ (super-admin nền tảng).
+  if (platformMe?.isSuperAdmin) {
+    navItems.push({ href: "/quan-tri-nen-tang", label: "Quản trị nền tảng", icon: ShieldCheck });
   }
 
   const initials =
@@ -66,14 +78,34 @@ export function AppSidebar() {
 
   return (
     <aside className="flex h-svh w-[68px] shrink-0 flex-col items-center gap-1 border-r border-sidebar-border bg-sidebar py-3">
-      {/* Logo */}
-      <Link
-        href="/inbox"
-        className="mb-2 grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm"
-        aria-label="ZaloCRM"
-      >
-        <span className="text-lg font-bold">Z</span>
-      </Link>
+      {/* Logo tổ chức (branding) */}
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Link
+              href="/inbox"
+              className="mb-2 grid size-10 place-items-center overflow-hidden rounded-xl text-primary-foreground shadow-sm"
+              style={{ backgroundColor: org?.logoUrl ? undefined : org?.brandColor || undefined }}
+              aria-label={org?.name || "ZaloCRM"}
+            >
+              {org?.logoUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={org.logoUrl} alt={org.name} className="size-full object-contain" />
+              ) : (
+                <span
+                  className={cn(
+                    "text-lg font-bold",
+                    org?.brandColor ? "text-white" : "bg-primary text-primary-foreground grid size-full place-items-center",
+                  )}
+                >
+                  {(org?.name?.[0] ?? "Z").toUpperCase()}
+                </span>
+              )}
+            </Link>
+          }
+        />
+        <TooltipContent side="right">{org?.name || "ZaloCRM"}</TooltipContent>
+      </Tooltip>
 
       {/* Nav */}
       <nav className="flex flex-1 flex-col items-center gap-1">

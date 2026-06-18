@@ -21,6 +21,8 @@ import {
 import { ApiError } from "@/lib/api";
 import { dayLabel } from "@/lib/format";
 import { PageHeader } from "@/components/page-header";
+import { EmptyState } from "@/components/ui/empty-state";
+import { EmptyCalendarArt } from "@/components/ui/illustrations";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
@@ -259,14 +261,11 @@ function AppointmentCard({
 
 function Empty() {
   return (
-    <div className="flex flex-col items-center justify-center gap-2 px-6 py-24 text-center">
-      <div className="grid size-12 place-items-center rounded-full bg-muted">
-        <CalendarDays className="size-6 text-muted-foreground" />
-      </div>
-      <p className="text-sm font-medium">Chưa có lịch hẹn</p>
-      <p className="max-w-xs text-xs text-muted-foreground">
-        Lịch hẹn tạo từ hội thoại hoặc ghi chú sẽ hiển thị ở đây.
-      </p>
-    </div>
+    <EmptyState
+      className="py-20"
+      art={<EmptyCalendarArt />}
+      title="Chưa có lịch hẹn"
+      description="Lịch hẹn tạo từ hội thoại hoặc ghi chú sẽ hiển thị ở đây."
+    />
   );
 }

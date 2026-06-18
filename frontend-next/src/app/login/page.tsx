@@ -2,8 +2,9 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Loader2 } from "lucide-react";
+import { Loader2, Check } from "lucide-react";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 import { apiGet, apiPost, setToken, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import type { AuthUser } from "@/lib/types";
@@ -107,20 +108,64 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="grid min-h-svh place-items-center bg-muted/40 px-4">
-      <div className="w-full max-w-sm space-y-6">
-        <div className="flex flex-col items-center gap-3 text-center">
-          <div className="grid size-12 place-items-center rounded-2xl bg-primary text-primary-foreground shadow-sm">
-            <span className="text-xl font-bold">Z</span>
-          </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight">ZaloCRM</h1>
-            <p className="text-sm text-muted-foreground">
-              Quản lý đa nick Zalo cho đội sale
-            </p>
-          </div>
+    <main className="relative grid min-h-svh lg:grid-cols-[1.05fr_1fr]">
+      {/* Bảng thương hiệu — chỉ desktop */}
+      <aside className="relative hidden overflow-hidden bg-primary px-12 py-14 text-primary-foreground lg:flex lg:flex-col lg:justify-between">
+        <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
+          <div className="animate-float-slow absolute -left-24 -top-24 size-96 rounded-full bg-white/15 blur-3xl" />
+          <div className="animate-float-slow absolute -right-16 top-1/3 size-80 rounded-full bg-violet-300/25 blur-3xl [animation-delay:2s]" />
+          <div className="animate-float-slow absolute -bottom-24 left-1/4 size-96 rounded-full bg-indigo-300/20 blur-3xl [animation-delay:4s]" />
+          <div className="absolute inset-0 opacity-[0.07] bg-[radial-gradient(currentColor_1px,transparent_1px)] bg-size-[22px_22px]" />
         </div>
 
+        <div className="animate-fade-in-up relative flex items-center gap-2.5">
+          <LogoMark className="size-9" />
+          <span className="text-lg font-bold tracking-tight">ZaloCRM</span>
+        </div>
+
+        <div className="animate-fade-in-up stagger-2 relative max-w-md">
+          <span className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-primary-foreground/90 ring-1 ring-white/15">
+            <span className="animate-pulse-soft size-1.5 rounded-full bg-emerald-400" />
+            CRM cho đội sale Zalo
+          </span>
+          <h2 className="mt-6 text-[2.6rem] font-bold leading-[1.08] tracking-tight">
+            Quản lý mọi nick Zalo trên một màn hình.
+          </h2>
+          <p className="mt-4 text-base leading-relaxed text-primary-foreground/75">
+            Gom mọi cuộc chat, khách hàng và trợ lý AI về một nơi — đội sale không
+            bỏ lỡ khách nào.
+          </p>
+          <ul className="mt-8 space-y-3 text-sm text-primary-foreground/90">
+            <Feature>Chat real-time đa tài khoản, không bỏ lỡ khách</Feature>
+            <Feature>Trợ lý AI tự động trả lời theo kịch bản</Feature>
+            <Feature>Khách hàng, nhãn &amp; phân quyền cho đội sale</Feature>
+          </ul>
+        </div>
+
+        <p className="animate-fade-in-up stagger-4 relative text-xs text-primary-foreground/60">
+          © {new Date().getFullYear()} ZaloCRM — CRM cho đội sale Zalo
+        </p>
+      </aside>
+
+      {/* Bảng form */}
+      <section className="relative grid place-items-center overflow-hidden bg-muted/30 px-4 py-10">
+        <div aria-hidden className="pointer-events-none absolute inset-0 lg:hidden">
+          <div className="absolute -right-10 -top-20 size-72 rounded-full bg-primary/10 blur-3xl" />
+          <div className="absolute -bottom-24 -left-10 size-72 rounded-full bg-primary/10 blur-3xl" />
+        </div>
+
+        <div className="relative w-full max-w-sm space-y-6">
+          <div className="animate-fade-in-up flex flex-col items-center gap-3 text-center lg:hidden">
+            <LogoMark className="size-12" />
+            <div>
+              <h1 className="text-xl font-bold tracking-tight">ZaloCRM</h1>
+              <p className="text-sm text-muted-foreground">
+                Quản lý đa nick Zalo cho đội sale
+              </p>
+            </div>
+          </div>
+
+          <div className="animate-fade-in-up stagger-1">
         {mode === "loading" ? (
           <div className="grid place-items-center py-10">
             <Loader2 className="size-5 animate-spin text-muted-foreground" />
@@ -250,7 +295,42 @@ export default function LoginPage() {
             </CardContent>
           </Card>
         )}
-      </div>
+          </div>
+        </div>
+      </section>
     </main>
+  );
+}
+
+function LogoMark({ className }: { className?: string }) {
+  return (
+    <span
+      className={cn(
+        "grid shrink-0 place-items-center rounded-2xl bg-linear-to-br from-indigo-500 to-violet-600 text-white shadow-sm ring-1 ring-white/25",
+        className,
+      )}
+    >
+      <svg
+        viewBox="0 0 24 24"
+        className="size-1/2"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M4 5h16v11h-9l-5 4v-4H4z" fill="currentColor" fillOpacity="0.2" />
+        <path d="M8 10h8M8 13h5" />
+      </svg>
+    </span>
+  );
+}
+
+function Feature({ children }: { children: React.ReactNode }) {
+  return (
+    <li className="flex items-start gap-2">
+      <Check className="mt-0.5 size-4 shrink-0 text-primary-foreground/90" />
+      <span>{children}</span>
+    </li>
   );
 }

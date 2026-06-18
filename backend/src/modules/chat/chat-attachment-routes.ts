@@ -18,6 +18,7 @@ import { zaloOps } from '../../shared/zalo-operations.js';
 import { generateThumbnail, sendNativeVideo } from '../../shared/video-processor.js';
 import { uploadBuffer, type UploadResult } from '../../shared/storage/minio-client.js';
 import { logger } from '../../shared/utils/logger.js';
+import { onHumanIntervention } from '../ai/agents/agent-autopilot.js';
 
 const IMAGE_MAX = 100 * 1024 * 1024;
 const VIDEO_MAX = 500 * 1024 * 1024;
@@ -312,6 +313,9 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
             },
           });
         }
+
+        // AI Agent: người thật gửi ảnh/file → tắt autopilot.
+        void onHumanIntervention(id, io);
 
         return { messages: created };
       } catch (err: any) {
