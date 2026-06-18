@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   app:
     build:
@@ -83,7 +81,7 @@ services:
       # SECURITY: no defaults — deploy MUST set MINIO_ROOT_USER and
       # MINIO_ROOT_PASSWORD in .env. Previously fell back to minioadmin/
       # minioadmin which let anyone with network access pop the admin console.
-      MINIO_ROOT_USER:     "${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set in .env}"
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set in .env}"
       MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env}"
     volumes:
       - minio_data:/data
@@ -125,7 +123,7 @@ services:
     # access-key auth.
     environment:
       # Same hard-fail pattern as minio service — no default credentials.
-      MINIO_ROOT_USER:     "${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set in .env}"
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set in .env}"
       MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env}"
       S3_BUCKET: ${S3_BUCKET:-zalocrm-attachments}
 
