@@ -1,23 +1,65 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Hạ tầng LOCAL DEV: Postgres + Redis + MinIO (+ backup). Backend/Frontend chạy
-# bên ngoài (tsx watch / next dev). Xem [[dev-run-setup]] / HUONG-DAN-CAI-DAT.md.
+# Production stack cho BACKEND (deploy elest.io / VPS Docker).
+# Frontend KHÔNG nằm ở đây — deploy riêng trên Vercel (thư mục frontend/).
 #
-# PRODUCTION (kiến trúc tách FE Vercel / BE Docker) → dùng docker-compose.prod.yml.
-# Service "app" monolith cũ (build gộp FE+BE) đã gỡ 2026-06-18.
+# Chạy:  docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+#
+# Biến bắt buộc trong .env.production (xem .env.production.example):
+#   DB_PASSWORD, JWT_SECRET, ENCRYPTION_KEY (≥32 ký tự), MINIO_ROOT_USER/PASSWORD,
+#   APP_URL (domain Vercel), S3_PUBLIC_URL (domain public của MinIO).
 # ─────────────────────────────────────────────────────────────────────────────
+
 services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: zalocrm-backend
+    container_name: zalocrm-backend
+    restart: unless-stopped
+    ports:
+      - "3000:3000" # elest.io map domain (vd api.yourdomain) → cổng này
+    env_file:
+      - .env.production
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=postgresql://${DB_USER:-crmuser}:${DB_PASSWORD}@db:5432/${DB_NAME:-zalocrm}
+      - REDIS_URL=redis://redis:6379
+      # CORS: domain Vercel (nhiều domain phân tách bằng dấu phẩy). Bắt buộc.
+      - APP_URL=${APP_URL}
+      - CORS_ALLOW_VERCEL_PREVIEW=${CORS_ALLOW_VERCEL_PREVIEW:-false}
+      # Object storage (MinIO nội bộ). S3_PUBLIC_URL PHẢI là URL https công khai
+      # browser + Zalo CDN truy cập được (vd https://storage.yourdomain).
+      - S3_ENDPOINT=${S3_ENDPOINT:-http://minio:9000}
+      - S3_PUBLIC_URL=${S3_PUBLIC_URL}
+      - S3_BUCKET=${S3_BUCKET:-zalocrm-attachments}
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY:-${MINIO_ROOT_USER}}
+      - S3_SECRET_KEY=${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - file_storage:/var/lib/zalo-crm/files
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
   db:
     image: postgres:16-alpine
-    container_name: zalo-crm-db
+    container_name: zalocrm-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${DB_USER:-crmuser}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
       POSTGRES_DB: ${DB_NAME:-zalocrm}
     volumes:
       - pg_data:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-crmuser}"]
       interval: 10s
@@ -25,49 +67,37 @@ services:
       retries: 5
     command: >
       postgres
-      -c shared_buffers=128MB
-      -c effective_cache_size=256MB
-      -c max_connections=50
+      -c shared_buffers=256MB
+      -c effective_cache_size=512MB
+      -c max_connections=80
 
   redis:
     image: redis:7-alpine
-    container_name: zalo-crm-redis
+    container_name: zalocrm-redis
     restart: unless-stopped
-    command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru --save 60 1000
     volumes:
       - redis_data:/data
-    ports:
-      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 3s
       retries: 3
-    profiles:
-      - redis
 
   minio:
     image: minio/minio:latest
-    container_name: zalo-crm-minio
+    container_name: zalocrm-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      # SECURITY: no defaults — deploy MUST set MINIO_ROOT_USER and
-      # MINIO_ROOT_PASSWORD in .env. Previously fell back to minioadmin/
-      # minioadmin which let anyone with network access pop the admin console.
-      MINIO_ROOT_USER: "${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set in .env}"
-      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env}"
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}"
     volumes:
       - minio_data:/data
     ports:
-      # Port 9000 (S3 API) MUST stay reachable from Zalo CDN — Zalo's servers
-      # fetch attachment URLs we send via zca-js sendImage/sendVideo, so we
-      # can't bind to loopback. In production this MUST sit behind a TLS
-      # reverse proxy (nginx/Caddy) on the host that:
-      #   - serves /<bucket>/<key> with HTTPS
-      #   - rate-limits per IP
-      #   - keeps the admin console (:9001) firewalled to ops VPN only.
-      # The :9001 admin console IS bound to 127.0.0.1 below — never expose it.
+      # Cổng 9000 (S3 API) PHẢI truy cập được từ browser + Zalo CDN. Trên elest.io
+      # map 1 subdomain (vd storage.yourdomain) → cổng này, có TLS. Console 9001
+      # chỉ bind loopback — KHÔNG mở ra ngoài.
       - "9000:9000"
       - "127.0.0.1:9001:9001"
     healthcheck:
@@ -78,7 +108,7 @@ services:
 
   minio-init:
     image: minio/mc:latest
-    container_name: zalo-crm-minio-init
+    container_name: zalocrm-minio-init
     depends_on:
       minio:
         condition: service_healthy
@@ -89,21 +119,14 @@ services:
       mc anonymous set download local/${S3_BUCKET:-zalocrm-attachments};
       exit 0;
       "
-    # Anonymous DOWNLOAD on the bucket is intentional: Zalo's CDN fetches
-    # attachment URLs we hand to zca-js. Keys are random UUIDs (see
-    # backend/src/shared/storage/minio-client.ts: `${date}/${randomUUID()}${ext}`)
-    # so listing is disabled and enumeration is infeasible.
-    # Anonymous UPLOAD is NOT enabled — only the backend can write via
-    # access-key auth.
     environment:
-      # Same hard-fail pattern as minio service — no default credentials.
-      MINIO_ROOT_USER: "${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set in .env}"
-      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set in .env}"
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}"
       S3_BUCKET: ${S3_BUCKET:-zalocrm-attachments}
 
   backup:
     image: prodrigestivill/postgres-backup-local
-    container_name: zalo-crm-backup
+    container_name: zalocrm-backup
     restart: unless-stopped
     volumes:
       - ./backups:/backups
@@ -117,9 +140,11 @@ services:
       BACKUP_KEEP_WEEKS: 4
       BACKUP_KEEP_MONTHS: 3
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
 volumes:
   pg_data:
+  file_storage:
   redis_data:
   minio_data:
