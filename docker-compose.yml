@@ -2,9 +2,9 @@
 # Production stack cho BACKEND (deploy elest.io / VPS Docker).
 # Frontend KHÔNG nằm ở đây — deploy riêng trên Vercel (thư mục frontend/).
 #
-# Chạy:  docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+# Chạy:  docker compose -f docker-compose.prod.yml --env-file .env up -d --build
 #
-# Biến bắt buộc trong .env.production (xem .env.production.example):
+# Biến bắt buộc trong .env (xem .env.production.example):
 #   DB_PASSWORD, JWT_SECRET, ENCRYPTION_KEY (≥32 ký tự), MINIO_ROOT_USER/PASSWORD,
 #   APP_URL (domain Vercel), S3_PUBLIC_URL (domain public của MinIO).
 # ─────────────────────────────────────────────────────────────────────────────
@@ -20,7 +20,7 @@ services:
     ports:
       - "3000:3000" # elest.io map domain (vd api.yourdomain) → cổng này
     env_file:
-      - .env.production
+      - .env
     environment:
       - NODE_ENV=production
       - PORT=3000
