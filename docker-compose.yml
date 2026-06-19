@@ -2,9 +2,9 @@
 # Production stack cho BACKEND (deploy elest.io / VPS Docker).
 # Frontend KHÔNG nằm ở đây — deploy riêng trên Vercel (thư mục frontend/).
 #
-# Chạy:  docker compose -f docker-compose.prod.yml --env-file .env up -d --build
+# Chạy:  docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
 #
-# Biến bắt buộc trong .env (xem .env.production.example):
+# Biến bắt buộc trong .env.production (xem .env.production.example):
 #   DB_PASSWORD, JWT_SECRET, ENCRYPTION_KEY (≥32 ký tự), MINIO_ROOT_USER/PASSWORD,
 #   APP_URL (domain Vercel), S3_PUBLIC_URL (domain public của MinIO).
 # ─────────────────────────────────────────────────────────────────────────────
@@ -19,13 +19,17 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000" # elest.io map domain (vd api.yourdomain) → cổng này
-    env_file:
-      - .env
+    # KHÔNG dùng env_file (.env.production gitignored, không có trong bản clone CI/CD).
+    # Mọi biến lấy từ env elest.io tiêm vào — KHAI BÁO trong elest.io → Environment.
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - HOST=0.0.0.0
       - DATABASE_URL=postgresql://${DB_USER:-crmuser}:${DB_PASSWORD}@db:5432/${DB_NAME:-zalocrm}
       - REDIS_URL=redis://redis:6379
+      # Bảo mật (BẮT BUỘC, ≥32 ký tự)
+      - JWT_SECRET=${JWT_SECRET}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       # CORS: domain Vercel (nhiều domain phân tách bằng dấu phẩy). Bắt buộc.
       - APP_URL=${APP_URL}
       - CORS_ALLOW_VERCEL_PREVIEW=${CORS_ALLOW_VERCEL_PREVIEW:-false}
@@ -36,6 +40,14 @@ services:
       - S3_BUCKET=${S3_BUCKET:-zalocrm-attachments}
       - S3_ACCESS_KEY=${S3_ACCESS_KEY:-${MINIO_ROOT_USER}}
       - S3_SECRET_KEY=${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}
+      # AI (tùy chọn)
+      - AI_DEFAULT_PROVIDER=${AI_DEFAULT_PROVIDER:-gemini}
+      - AI_DEFAULT_MODEL=${AI_DEFAULT_MODEL:-gemini-2.5-flash}
+      - GEMINI_AUTH_TOKEN=${GEMINI_AUTH_TOKEN:-}
+      - GEMINI_DEFAULT_PRO_MODEL=${GEMINI_DEFAULT_PRO_MODEL:-gemini-2.5-pro}
+      - GEMINI_DEFAULT_FLASH_MODEL=${GEMINI_DEFAULT_FLASH_MODEL:-gemini-2.5-flash}
+      - ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN:-}
+      - AUTOMATION_STUB_MODE=${AUTOMATION_STUB_MODE:-false}
     depends_on:
       db:
         condition: service_healthy
