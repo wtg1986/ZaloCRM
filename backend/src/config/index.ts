@@ -45,6 +45,15 @@ export const config = {
   databaseUrl: envValue('DATABASE_URL') || 'postgresql://crmuser:password@localhost:5432/zalocrm',
   uploadDir: envValue('UPLOAD_DIR') || '/var/lib/zalo-crm/files',
   appUrl: envValue('APP_URL') || 'http://localhost:3000',
+  // CORS: domain(s) frontend được phép gọi. APP_URL có thể là nhiều domain phân
+  // tách bởi dấu phẩy (vd "https://app.x.com,https://x.com"). Frontend deploy
+  // Vercel (origin khác backend) → phải liệt kê ở đây.
+  allowedOrigins: (envValue('APP_URL') || 'http://localhost:3000')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+  // Cho phép mọi preview *.vercel.app (bật khi cần test nhánh trên Vercel).
+  corsAllowVercelPreview: envValue('CORS_ALLOW_VERCEL_PREVIEW') === 'true',
 
   /* --- S3/MinIO storage for chat attachments --- */
   s3Endpoint: envValue('S3_ENDPOINT') || 'http://localhost:9000',

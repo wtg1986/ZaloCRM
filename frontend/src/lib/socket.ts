@@ -8,8 +8,12 @@ let socket: Socket | null = null;
 
 export function getSocket(): Socket {
   if (!socket) {
+    // Prod (Vercel): trỏ domain backend. Ưu tiên NEXT_PUBLIC_SOCKET_URL, fallback
+    // NEXT_PUBLIC_API_URL, cuối cùng localhost (dev). WebSocket KHÔNG đi qua rewrites.
     const url =
-      process.env.NEXT_PUBLIC_SOCKET_URL ?? "http://localhost:3000";
+      process.env.NEXT_PUBLIC_SOCKET_URL ??
+      process.env.NEXT_PUBLIC_API_URL ??
+      "http://localhost:3000";
     socket = io(url, {
       transports: ["websocket"],
       autoConnect: true,

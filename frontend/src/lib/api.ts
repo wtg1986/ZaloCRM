@@ -1,5 +1,12 @@
-// API client mỏng cho backend ZaloCRM. Gọi same-origin "/api/v1/*" (Next rewrite
-// proxy sang Fastify:3000). Đính kèm JWT Bearer từ localStorage.
+// API client mỏng cho backend ZaloCRM.
+//  - DEV: NEXT_PUBLIC_API_URL trống → gọi tương đối "/api/v1/*" (Next rewrite
+//    proxy sang Fastify:3000, same-origin).
+//  - PROD (Vercel): NEXT_PUBLIC_API_URL = domain backend (vd https://api.x.com)
+//    → gọi THẲNG backend (backend phải bật CORS cho domain Vercel).
+// Đính kèm JWT Bearer từ localStorage.
+
+// NEXT_PUBLIC_* được Next inline lúc build cho client.
+const API_ORIGIN = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
 
 const TOKEN_KEY = "zalocrm.token";
 
@@ -31,7 +38,8 @@ interface ApiOptions extends Omit<RequestInit, "body"> {
 }
 
 function buildUrl(path: string, params?: ApiOptions["params"]): string {
-  const base = path.startsWith("/api/") ? path : `/api/v1${path}`;
+  const rel = path.startsWith("/api/") ? path : `/api/v1${path}`;
+  const base = API_ORIGIN ? `${API_ORIGIN}${rel}` : rel;
   if (!params) return base;
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {

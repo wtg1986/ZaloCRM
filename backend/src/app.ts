@@ -97,8 +97,29 @@ async function bootstrap() {
 
   // ── Plugins ──────────────────────────────────────────────────────────────
 
+  // CORS: cho phép same-origin/curl (no origin), domain trong allowedOrigins (APP_URL),
+  // và tùy chọn preview *.vercel.app. Predicate dùng chung cho REST + WebSocket.
+  // Dev (non-prod) cho phép tất cả.
+  const isAllowedOrigin = (origin?: string): boolean => {
+    if (!origin) return true;
+    if (config.allowedOrigins.includes(origin)) return true;
+    if (config.corsAllowVercelPreview) {
+      try {
+        if (/\.vercel\.app$/.test(new URL(origin).hostname)) return true;
+      } catch {
+        /* ignore URL parse error */
+      }
+    }
+    return false;
+  };
+
   await app.register(cors, {
-    origin: config.isProduction ? config.appUrl : true,
+    origin: config.isProduction
+      ? (origin, cb) => {
+          if (isAllowedOrigin(origin)) cb(null, true);
+          else cb(new Error(`CORS: origin ${origin ?? ''} không được phép`), false);
+        }
+      : true,
     credentials: true,
   });
 
@@ -120,19 +141,27 @@ async function bootstrap() {
     },
   });
 
-  // Serve compiled frontend assets in production
+  // Serve compiled frontend assets in production — CHỈ khi image có sẵn thư mục
+  // static (kiểu monolith cũ). Deploy tách (FE Vercel) thì không có → bỏ qua êm.
   if (config.isProduction) {
-    await app.register(fastifyStatic, {
-      root: path.join(__dirname, '../static'),
-      prefix: '/',
-    });
+    const staticRoot = path.join(__dirname, '../static');
+    try {
+      await app.register(fastifyStatic, { root: staticRoot, prefix: '/' });
+    } catch {
+      logger.warn(`[static] Không có ${staticRoot} — bỏ qua serve frontend (FE deploy riêng).`);
+    }
   }
 
   // ── Socket.IO ─────────────────────────────────────────────────────────────
 
   const io = new Server(app.server, {
     cors: {
-      origin: config.isProduction ? config.appUrl : '*',
+      origin: config.isProduction
+        ? (origin, cb) => {
+            if (isAllowedOrigin(origin)) cb(null, true);
+            else cb(new Error('CORS: origin không được phép'));
+          }
+        : '*',
       credentials: true,
     },
   });
